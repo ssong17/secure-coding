@@ -143,6 +143,38 @@ def profile():
     current_user = cursor.fetchone()
     return render_template('profile.html', user=current_user)
 
+# 사용자 조회: 아이디로 검색
+@app.route('/users')
+def users():
+    if 'user_id' not in session:
+        return redirect(url_for('login'))
+    query = request.args.get('q', '').strip()
+    db = get_db()
+    cursor = db.cursor()
+    if query:
+        cursor.execute(
+            "SELECT id, username, bio FROM user WHERE username LIKE ? ORDER BY username",
+            ('%' + query + '%',)
+        )
+    else:
+        cursor.execute("SELECT id, username, bio FROM user ORDER BY username")
+    results = cursor.fetchall()
+    return render_template('users.html', users=results, query=query)
+
+# 사용자 상세 정보 조회
+@app.route('/user/<user_id>')
+def user_detail(user_id):
+    if 'user_id' not in session:
+        return redirect(url_for('login'))
+    db = get_db()
+    cursor = db.cursor()
+    cursor.execute("SELECT id, username, bio FROM user WHERE id = ?", (user_id,))
+    found_user = cursor.fetchone()
+    if not found_user:
+        flash('사용자를 찾을 수 없습니다.')
+        return redirect(url_for('users'))
+    return render_template('user_detail.html', user=found_user)
+
 # 상품 등록
 @app.route('/product/new', methods=['GET', 'POST'])
 def new_product():

@@ -1,0 +1,7 @@
+{% extends "base.html" %}
+{% block title %}사용자 정보{% endblock %}
+{% block content %}
+<h2>{{ user.username }}</h2>
+<p>{{ user.bio if user.bio else '소개글이 없습니다.' }}</p>
+<p><a href="{{ url_for('users') }}">목록으로</a></p>
+{% endblock %}

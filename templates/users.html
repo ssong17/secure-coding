@@ -1,0 +1,18 @@
+{% extends "base.html" %}
+{% block title %}사용자 조회{% endblock %}
+{% block content %}
+<h2>사용자 조회</h2>
+<form method="get" action="{{ url_for('users') }}">
+  <input type="text" name="q" placeholder="아이디로 검색" value="{{ query }}">
+  <button type="submit">검색</button>
+</form>
+<ul>
+  {% for u in users %}
+    <li>
+      <a href="{{ url_for('user_detail', user_id=u.id) }}">{{ u.username }}</a>
+    </li>
+  {% else %}
+    <li>검색 결과가 없습니다.</li>
+  {% endfor %}
+</ul>
+{% endblock %}
