@@ -157,6 +157,32 @@ def profile():
     current_user = cursor.fetchone()
     return render_template('profile.html', user=current_user)
 
+# 마이페이지: 비밀번호 변경
+@app.route('/profile/password', methods=['POST'])
+def update_password():
+    if 'user_id' not in session:
+        return redirect(url_for('login'))
+    current_password = request.form.get('current_password', '')
+    new_password = request.form.get('new_password', '')
+    confirm_password = request.form.get('confirm_password', '')
+    db = get_db()
+    cursor = db.cursor()
+    cursor.execute("SELECT * FROM user WHERE id = ?", (session['user_id'],))
+    current_user = cursor.fetchone()
+    if current_user['password'] != current_password:
+        flash('현재 비밀번호가 일치하지 않습니다.')
+        return redirect(url_for('profile'))
+    if not new_password:
+        flash('새 비밀번호를 입력해주세요.')
+        return redirect(url_for('profile'))
+    if new_password != confirm_password:
+        flash('새 비밀번호가 일치하지 않습니다.')
+        return redirect(url_for('profile'))
+    cursor.execute("UPDATE user SET password = ? WHERE id = ?", (new_password, session['user_id']))
+    db.commit()
+    flash('비밀번호가 변경되었습니다.')
+    return redirect(url_for('profile'))
+
 # 사용자 조회: 아이디로 검색
 @app.route('/users')
 def users():
