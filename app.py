@@ -68,16 +68,21 @@ def index():
 @app.route('/register', methods=['GET', 'POST'])
 def register():
     if request.method == 'POST':
-        username = request.form['username']
+        user_id = request.form['id'].strip()
+        username = request.form['username'].strip()
         password = request.form['password']
         db = get_db()
         cursor = db.cursor()
-        # 중복 사용자 체크
+        # 아이디 중복 체크
+        cursor.execute("SELECT * FROM user WHERE id = ?", (user_id,))
+        if cursor.fetchone() is not None:
+            flash('이미 존재하는 아이디입니다.')
+            return redirect(url_for('register'))
+        # 사용자이름(닉네임) 중복 체크
         cursor.execute("SELECT * FROM user WHERE username = ?", (username,))
         if cursor.fetchone() is not None:
-            flash('이미 존재하는 사용자명입니다.')
+            flash('이미 존재하는 사용자이름입니다.')
             return redirect(url_for('register'))
-        user_id = str(uuid.uuid4())
         cursor.execute("INSERT INTO user (id, username, password) VALUES (?, ?, ?)",
                        (user_id, username, password))
         db.commit()
@@ -89,11 +94,11 @@ def register():
 @app.route('/login', methods=['GET', 'POST'])
 def login():
     if request.method == 'POST':
-        username = request.form['username']
+        user_id = request.form['id']
         password = request.form['password']
         db = get_db()
         cursor = db.cursor()
-        cursor.execute("SELECT * FROM user WHERE username = ? AND password = ?", (username, password))
+        cursor.execute("SELECT * FROM user WHERE id = ? AND password = ?", (user_id, password))
         user = cursor.fetchone()
         if user:
             session['user_id'] = user['id']
@@ -134,8 +139,17 @@ def profile():
     db = get_db()
     cursor = db.cursor()
     if request.method == 'POST':
+        username = request.form.get('username', '').strip()
         bio = request.form.get('bio', '')
-        cursor.execute("UPDATE user SET bio = ? WHERE id = ?", (bio, session['user_id']))
+        if not username:
+            flash('사용자이름을 입력해주세요.')
+            return redirect(url_for('profile'))
+        # 사용자이름(닉네임) 중복 체크 (본인 제외)
+        cursor.execute("SELECT * FROM user WHERE username = ? AND id != ?", (username, session['user_id']))
+        if cursor.fetchone() is not None:
+            flash('이미 존재하는 사용자이름입니다.')
+            return redirect(url_for('profile'))
+        cursor.execute("UPDATE user SET username = ?, bio = ? WHERE id = ?", (username, bio, session['user_id']))
         db.commit()
         flash('프로필이 업데이트되었습니다.')
         return redirect(url_for('profile'))
@@ -153,8 +167,8 @@ def users():
     cursor = db.cursor()
     if query:
         cursor.execute(
-            "SELECT id, username, bio FROM user WHERE username LIKE ? ORDER BY username",
-            ('%' + query + '%',)
+            "SELECT id, username, bio FROM user WHERE username LIKE ? OR id LIKE ? ORDER BY username",
+            ('%' + query + '%', '%' + query + '%')
         )
     else:
         cursor.execute("SELECT id, username, bio FROM user ORDER BY username")

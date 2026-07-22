@@ -36,7 +36,7 @@
     var input = document.getElementById('chat_input');
     var message = input.value;
     if (message) {
-      socket.emit('send_message', { 'username': "{{ user.username }}", 'message': message });
+      socket.emit('send_message', { 'username': "{{ user.username }}(@{{ user.id }})", 'message': message });
       input.value = "";
     }
   }
