@@ -835,6 +835,31 @@ def admin_delete_user(user_id):
     flash('사용자가 강제 탈퇴 처리되었습니다.')
     return redirect(url_for('users'))
 
+# 내 채팅 목록: 로그인한 사용자가 참여 중인 모든 1:1 대화방을 최근 메시지순으로 조회
+# (기존엔 상품 상세의 "문의하기"로만 채팅에 진입할 수 있어, 진행 중인 대화를 다시 찾아볼 방법이 없었음)
+@app.route('/chats')
+def my_chats():
+    if 'user_id' not in session:
+        return redirect(url_for('login'))
+    db = get_db()
+    cursor = db.cursor()
+    cursor.execute("""
+        SELECT c.id AS conversation_id, c.product_id,
+               CASE WHEN c.user_a_id = ? THEN c.user_b_id ELSE c.user_a_id END AS peer_id,
+               CASE WHEN c.user_a_id = ? THEN ub.username ELSE ua.username END AS peer_name,
+               p.title AS product_title,
+               (SELECT content FROM message m WHERE m.conversation_id = c.id ORDER BY m.created_at DESC LIMIT 1) AS last_message,
+               (SELECT created_at FROM message m WHERE m.conversation_id = c.id ORDER BY m.created_at DESC LIMIT 1) AS last_message_at
+        FROM conversation c
+        JOIN user ua ON c.user_a_id = ua.id
+        JOIN user ub ON c.user_b_id = ub.id
+        LEFT JOIN product p ON c.product_id = p.id
+        WHERE c.user_a_id = ? OR c.user_b_id = ?
+        ORDER BY last_message_at DESC
+    """, (session['user_id'], session['user_id'], session['user_id'], session['user_id']))
+    conversations = cursor.fetchall()
+    return render_template('chats.html', conversations=conversations)
+
 # 1:1 채팅방 입장 (없으면 생성 후 대화 내역과 함께 렌더링, ?product_id= 로 들어오면 해당 상품을 대화방에 연결)
 @app.route('/chat/<peer_id>')
 def chat(peer_id):
@@ -936,6 +961,28 @@ def buy_product(product_id):
     check_and_suspend_if_anomalous_transfer(cursor, session['user_id'], amount, created_at)
     db.commit()
     flash(f'{product["title"]}을(를) {amount:,}원에 구매했습니다.')
+    return redirect(url_for('view_product', product_id=product_id))
+
+# 판매자 본인이 판매중/판매완료 상태를 직접 전환 (직거래 등 플랫폼 밖에서 거래가 끝난 경우를 위함).
+# 실제 인앱 송금(buy_product)으로 이미 대금이 오간 거래 기록(transfer)을 되돌리지는 않으며, 단순히 상품의 노출 상태만 바꾼다.
+@app.route('/product/<product_id>/toggle-sold', methods=['POST'])
+def toggle_sold_product(product_id):
+    if 'user_id' not in session:
+        return redirect(url_for('login'))
+    db = get_db()
+    cursor = db.cursor()
+    cursor.execute("SELECT * FROM product WHERE id = ?", (product_id,))
+    product = cursor.fetchone()
+    if not product:
+        flash('상품을 찾을 수 없습니다.')
+        return redirect(url_for('dashboard'))
+    if product['seller_id'] != session['user_id']:
+        flash('본인이 등록한 상품만 판매 상태를 변경할 수 있습니다.')
+        return redirect(url_for('view_product', product_id=product_id))
+    new_status = 0 if product['is_sold'] else 1
+    cursor.execute("UPDATE product SET is_sold = ? WHERE id = ?", (new_status, product_id))
+    db.commit()
+    flash('판매완료로 상태가 변경되었습니다.' if new_status else '판매중으로 상태가 변경되었습니다.')
     return redirect(url_for('view_product', product_id=product_id))
 
 # 상품 등록 (정지 계정이거나 누적 수락 신고가 기준치 이상이면 등록 제한)

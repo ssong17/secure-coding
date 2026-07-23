@@ -1,0 +1,23 @@
+{% extends "base.html" %}
+{% block title %}채팅 목록{% endblock %}
+{% block content %}
+<h2>채팅 목록</h2>
+{% if conversations %}
+<ul>
+  {% for c in conversations %}
+  <li>
+    <a href="{{ url_for('chat', peer_id=c.peer_id) }}">
+      {{ c.peer_name }}(@{{ c.peer_id }}){% if c.product_title %} - {{ c.product_title }}{% endif %}
+    </a>
+    {% if c.last_message %}
+    <br><small>{{ c.last_message }} ({{ c.last_message_at | fmt_datetime }})</small>
+    {% else %}
+    <br><small>아직 메시지가 없습니다.</small>
+    {% endif %}
+  </li>
+  {% endfor %}
+</ul>
+{% else %}
+<p>진행 중인 채팅이 없습니다. 상품 상세 페이지의 "문의하기"로 채팅을 시작해보세요.</p>
+{% endif %}
+{% endblock %}
