@@ -1,4 +1,5 @@
 import os
+import re
 import secrets
 import sqlite3
 import uuid
@@ -24,6 +25,8 @@ app.config['SESSION_COOKIE_HTTPONLY'] = True
 app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'
 # HTTPS 배포 환경에서는 SESSION_COOKIE_SECURE=1 환경변수로 켤 것 (로컬 HTTP 개발 환경에서는 켜면 쿠키가 전송되지 않음)
 app.config['SESSION_COOKIE_SECURE'] = os.environ.get('SESSION_COOKIE_SECURE', '0') == '1'
+# 세션 만료: 로그인 후 30분간 활동이 없으면 세션이 만료되도록 설정 (탈취된 세션의 유효 기간 제한)
+app.config['PERMANENT_SESSION_LIFETIME'] = datetime.timedelta(minutes=30)
 
 DATABASE = 'market.db'
 socketio = SocketIO(app)
@@ -64,6 +67,16 @@ os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
 def allowed_image(filename):
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_IMAGE_EXTENSIONS
+
+# 상품 등록/수정 공통 입력 검증: 문제가 있으면 사용자에게 보여줄 오류 메시지를, 없으면 None을 반환
+def validate_product_fields(title, description, price):
+    if not title or not title.strip() or len(title) > 100:
+        return '제목은 1~100자로 입력해주세요.'
+    if not description or not description.strip() or len(description) > 2000:
+        return '설명은 1~2000자로 입력해주세요.'
+    if not price.isdigit() or not (0 < int(price) <= 1_000_000_000):
+        return '가격은 1~1,000,000,000 사이의 숫자로 입력해주세요.'
+    return None
 
 # 업로드된 이미지를 검증 후 uuid 파일명으로 저장, 저장된 파일명을 반환 (파일이 없으면 None)
 def save_product_image(image_file):
@@ -145,6 +158,28 @@ LARGE_TRANSFER_THRESHOLD = 250000        # 이 금액 이상이면 고액 거래
 RAPID_TRANSFER_COUNT_THRESHOLD = 5       # 아래 시간 내에 동일 발신자가 이 건수 이상 보내면 표시
 RAPID_TRANSFER_WINDOW_MINUTES = 10
 
+# 로그인 실패 방어 (무차별 대입 공격 방지를 위한 계정 잠금)
+LOGIN_LOCKOUT_THRESHOLD = 5   # 연속 로그인 실패가 이 횟수에 도달하면 잠금
+LOGIN_LOCKOUT_MINUTES = 5     # 잠금 유지 시간
+
+# 채팅 메시지 스팸 방지 (Rate Limiting)
+CHAT_MESSAGE_MAX_LENGTH = 500          # 메시지 최대 길이(자)
+CHAT_RATE_LIMIT_COUNT = 10             # 아래 시간 내에 허용되는 최대 메시지 수
+CHAT_RATE_LIMIT_WINDOW_SECONDS = 10
+_chat_message_timestamps = {}  # user_id -> 최근 전송 시각 리스트 (프로세스 메모리 기준, 단일 서버 인스턴스 가정)
+
+# 동일 사용자가 짧은 시간 내에 채팅 메시지를 과도하게 보내는지 확인 (초과 시 True)
+def is_chat_rate_limited(user_id):
+    now = datetime.datetime.utcnow()
+    window = datetime.timedelta(seconds=CHAT_RATE_LIMIT_WINDOW_SECONDS)
+    timestamps = [t for t in _chat_message_timestamps.get(user_id, []) if now - t <= window]
+    if len(timestamps) >= CHAT_RATE_LIMIT_COUNT:
+        _chat_message_timestamps[user_id] = timestamps
+        return True
+    timestamps.append(now)
+    _chat_message_timestamps[user_id] = timestamps
+    return False
+
 # 회원 본인에 대한 신고 + 본인이 등록한 상품에 대한 신고를 합산해 누적 수락 신고 수를 계산
 def count_accepted_reports_against_user(cursor, user_id):
     cursor.execute("""
@@ -224,6 +259,10 @@ def init_db():
             cursor.execute("ALTER TABLE user ADD COLUMN is_suspended INTEGER NOT NULL DEFAULT 0")
         if 'balance' not in user_columns:
             cursor.execute("ALTER TABLE user ADD COLUMN balance INTEGER NOT NULL DEFAULT 0")
+        if 'failed_login_count' not in user_columns:
+            cursor.execute("ALTER TABLE user ADD COLUMN failed_login_count INTEGER NOT NULL DEFAULT 0")
+        if 'locked_until' not in user_columns:
+            cursor.execute("ALTER TABLE user ADD COLUMN locked_until TEXT")
         # 관리자 계정이 하나도 없으면 기본 관리자 계정 시드 생성
         cursor.execute("SELECT 1 FROM user WHERE is_admin = 1")
         if cursor.fetchone() is None:
@@ -375,6 +414,18 @@ def register():
         user_id = request.form['id'].strip()
         username = request.form['username'].strip()
         password = request.form['password']
+
+        # 서버측 입력 검증: 아이디는 영문/숫자/밑줄만, 사용자이름/비밀번호는 길이 제한 (클라이언트 검증 우회 대비)
+        if not re.fullmatch(r'[A-Za-z0-9_]{3,20}', user_id):
+            flash('아이디는 영문, 숫자, 밑줄(_)로 3~20자여야 합니다.')
+            return redirect(url_for('register'))
+        if not (1 <= len(username) <= 20):
+            flash('사용자이름은 1~20자여야 합니다.')
+            return redirect(url_for('register'))
+        if len(password) < 8:
+            flash('비밀번호는 8자 이상이어야 합니다.')
+            return redirect(url_for('register'))
+
         db = get_db()
         cursor = db.cursor()
         # 아이디 중복 체크
@@ -404,12 +455,38 @@ def login():
         cursor = db.cursor()
         cursor.execute("SELECT * FROM user WHERE id = ?", (user_id,))
         user = cursor.fetchone()
+
+        # 계정 잠금 확인: 잠금 시간이 아직 지나지 않았으면 비밀번호 확인 없이 즉시 차단
+        if user and user['locked_until']:
+            locked_until = datetime.datetime.fromisoformat(user['locked_until'])
+            if datetime.datetime.utcnow() < locked_until:
+                flash('로그인 시도가 너무 많아 계정이 잠겼습니다. 잠시 후 다시 시도해주세요.')
+                return redirect(url_for('login'))
+
         if user and not check_password_hash(user['password'], password):
+            # 로그인 실패: 실패 횟수를 누적하고, 기준치에 도달하면 계정을 일시 잠금
+            failed_count = user['failed_login_count'] + 1
+            if failed_count >= LOGIN_LOCKOUT_THRESHOLD:
+                locked_until = (datetime.datetime.utcnow() + datetime.timedelta(minutes=LOGIN_LOCKOUT_MINUTES)).isoformat()
+                cursor.execute(
+                    "UPDATE user SET failed_login_count = ?, locked_until = ? WHERE id = ?",
+                    (failed_count, locked_until, user['id'])
+                )
+            else:
+                cursor.execute("UPDATE user SET failed_login_count = ? WHERE id = ?", (failed_count, user['id']))
+            db.commit()
             user = None
+
         if user:
             if user['is_suspended']:
                 flash('정지 처리된 계정입니다. 관리자에게 문의해주세요.')
                 return redirect(url_for('login'))
+            # 로그인 성공: 실패 횟수/잠금 상태 초기화
+            cursor.execute(
+                "UPDATE user SET failed_login_count = 0, locked_until = NULL WHERE id = ?", (user['id'],)
+            )
+            db.commit()
+            session.permanent = True
             session['user_id'] = user['id']
             session['is_admin'] = bool(user['is_admin'])
             flash('로그인 성공!')
@@ -495,8 +572,11 @@ def profile():
     if request.method == 'POST':
         username = request.form.get('username', '').strip()
         bio = request.form.get('bio', '')
-        if not username:
-            flash('사용자이름을 입력해주세요.')
+        if not (1 <= len(username) <= 20):
+            flash('사용자이름은 1~20자여야 합니다.')
+            return redirect(url_for('profile'))
+        if len(bio) > 500:
+            flash('자기소개는 500자 이하로 입력해주세요.')
             return redirect(url_for('profile'))
         # 사용자이름(닉네임) 중복 체크 (본인 제외)
         cursor.execute("SELECT * FROM user WHERE username = ? AND id != ?", (username, session['user_id']))
@@ -529,8 +609,8 @@ def update_password():
     if not check_password_hash(current_user['password'], current_password):
         flash('현재 비밀번호가 일치하지 않습니다.')
         return redirect(url_for('profile'))
-    if not new_password:
-        flash('새 비밀번호를 입력해주세요.')
+    if len(new_password) < 8:
+        flash('새 비밀번호는 8자 이상이어야 합니다.')
         return redirect(url_for('profile'))
     if new_password != confirm_password:
         flash('새 비밀번호가 일치하지 않습니다.')
@@ -707,7 +787,7 @@ def admin_unsuspend_user(user_id):
         return redirect(url_for('user_detail', user_id=user_id))
     cursor.execute("UPDATE user SET is_suspended = 0 WHERE id = ?", (user_id,))
     db.commit()
-    flash('정지이 해제되었습니다.')
+    flash('정지가 해제되었습니다.')
     return redirect(url_for('user_detail', user_id=user_id))
 
 # 관리자: 회원 정지 재전환 (해제 후에도 누적 수락 신고가 기준치 이상으로 남아있으면 다시 정지 처리 가능)
@@ -877,6 +957,11 @@ def new_product():
         description = request.form['description']
         price = request.form['price']
 
+        error = validate_product_fields(title, description, price)
+        if error:
+            flash(error)
+            return redirect(url_for('new_product'))
+
         try:
             image_filename = save_product_image(request.files.get('image'))
         except ValueError as e:
@@ -913,6 +998,11 @@ def edit_product(product_id):
         title = request.form['title']
         description = request.form['description']
         price = request.form['price']
+
+        error = validate_product_fields(title, description, price)
+        if error:
+            flash(error)
+            return redirect(url_for('edit_product', product_id=product_id))
 
         try:
             new_filename = save_product_image(request.files.get('image'))
@@ -1005,6 +1095,13 @@ def report():
         target_type = request.form.get('target_type')
         target_id = request.form.get('target_id', '').strip()
         reason = request.form.get('reason', '').strip()
+
+        if not reason or len(reason) > 500:
+            flash('신고 사유는 1~500자로 입력해주세요.')
+            return redirect(url_for('report'))
+        if len(target_id) > 100:
+            flash('신고 대상을 찾을 수 없습니다.')
+            return redirect(url_for('report'))
 
         if target_type == 'user':
             cursor.execute("SELECT 1 FROM user WHERE id = ?", (target_id,))
@@ -1248,8 +1345,10 @@ def admin_broadcast_chat():
 def handle_send_message_event(data):
     if 'user_id' not in session:
         return
-    content = (data.get('message') or '').strip()
+    content = (data.get('message') or '').strip()[:CHAT_MESSAGE_MAX_LENGTH]
     if not content:
+        return
+    if is_chat_rate_limited(session['user_id']):
         return
     db = get_db()
     cursor = db.cursor()
@@ -1296,10 +1395,12 @@ def handle_send_direct_message(data):
     if 'user_id' not in session:
         return
     conversation_id = data.get('conversation_id')
-    content = (data.get('message') or '').strip()
+    content = (data.get('message') or '').strip()[:CHAT_MESSAGE_MAX_LENGTH]
     if not conversation_id or not content:
         return
     if not is_conversation_participant(conversation_id, session['user_id']):
+        return
+    if is_chat_rate_limited(session['user_id']):
         return
     db = get_db()
     cursor = db.cursor()

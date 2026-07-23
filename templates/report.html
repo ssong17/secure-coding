@@ -11,7 +11,7 @@
   </select><br>
   신고 대상 ID: <input type="text" name="target_id" value="{{ target_id }}" required><br>
   신고 사유: <br>
-  <textarea name="reason" rows="4" cols="50" required></textarea><br>
+  <textarea name="reason" rows="4" cols="50" maxlength="500" required></textarea><br>
   <button type="submit">신고 접수</button>
 </form>
 {% endblock %}

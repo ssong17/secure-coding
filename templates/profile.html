@@ -5,9 +5,9 @@
 <p>아이디: {{ user.id }}</p>
 <form method="post">
   <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-  사용자이름: <input type="text" name="username" value="{{ user.username }}" required><br>
+  사용자이름: <input type="text" name="username" value="{{ user.username }}" maxlength="20" required><br>
   소개글: <br>
-  <textarea name="bio" rows="4" cols="50">{{ user.bio or '' }}</textarea><br>
+  <textarea name="bio" rows="4" cols="50" maxlength="500">{{ user.bio or '' }}</textarea><br>
   <button type="submit">프로필 업데이트</button>
 </form>
 
@@ -15,7 +15,7 @@
 <form method="post" action="{{ url_for('update_password') }}">
   <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
   현재 비밀번호: <input type="password" name="current_password" required><br>
-  새 비밀번호: <input type="password" name="new_password" required><br>
+  새 비밀번호: <input type="password" name="new_password" minlength="8" required><br>
   새 비밀번호 확인: <input type="password" name="confirm_password" required><br>
   <button type="submit">비밀번호 변경</button>
 </form>
