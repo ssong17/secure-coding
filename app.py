@@ -83,14 +83,17 @@ def init_db():
                 username TEXT UNIQUE NOT NULL,
                 password TEXT NOT NULL,
                 bio TEXT,
-                is_admin INTEGER NOT NULL DEFAULT 0
+                is_admin INTEGER NOT NULL DEFAULT 0,
+                is_suspended INTEGER NOT NULL DEFAULT 0
             )
         """)
-        # 기존 DB에 is_admin 컬럼이 없으면 추가 (마이그레이션)
+        # 기존 DB에 is_admin/is_suspended 컬럼이 없으면 추가 (마이그레이션)
         cursor.execute("PRAGMA table_info(user)")
         user_columns = [row[1] for row in cursor.fetchall()]
         if 'is_admin' not in user_columns:
             cursor.execute("ALTER TABLE user ADD COLUMN is_admin INTEGER NOT NULL DEFAULT 0")
+        if 'is_suspended' not in user_columns:
+            cursor.execute("ALTER TABLE user ADD COLUMN is_suspended INTEGER NOT NULL DEFAULT 0")
         # 관리자 계정이 하나도 없으면 기본 관리자 계정 시드 생성
         cursor.execute("SELECT 1 FROM user WHERE is_admin = 1")
         if cursor.fetchone() is None:
@@ -205,6 +208,9 @@ def login():
         cursor.execute("SELECT * FROM user WHERE id = ? AND password = ?", (user_id, password))
         user = cursor.fetchone()
         if user:
+            if user['is_suspended']:
+                flash('휴면 처리된 계정입니다. 관리자에게 문의해주세요.')
+                return redirect(url_for('login'))
             session['user_id'] = user['id']
             session['is_admin'] = bool(user['is_admin'])
             flash('로그인 성공!')
@@ -299,11 +305,11 @@ def users():
     cursor = db.cursor()
     if query:
         cursor.execute(
-            "SELECT id, username, bio FROM user WHERE username LIKE ? OR id LIKE ? ORDER BY username",
+            "SELECT id, username, bio, is_suspended FROM user WHERE username LIKE ? OR id LIKE ? ORDER BY username",
             ('%' + query + '%', '%' + query + '%')
         )
     else:
-        cursor.execute("SELECT id, username, bio FROM user ORDER BY username")
+        cursor.execute("SELECT id, username, bio, is_suspended FROM user ORDER BY username")
     results = cursor.fetchall()
     return render_template('users.html', users=results, query=query)
 
@@ -314,12 +320,55 @@ def user_detail(user_id):
         return redirect(url_for('login'))
     db = get_db()
     cursor = db.cursor()
-    cursor.execute("SELECT id, username, bio FROM user WHERE id = ?", (user_id,))
+    cursor.execute("SELECT id, username, bio, is_admin, is_suspended FROM user WHERE id = ?", (user_id,))
     found_user = cursor.fetchone()
     if not found_user:
         flash('사용자를 찾을 수 없습니다.')
         return redirect(url_for('users'))
     return render_template('user_detail.html', user=found_user)
+
+# 관리자: 회원 휴면 전환/해제 (관리자 계정, 본인 제외)
+@app.route('/admin/users/<user_id>/toggle-suspend', methods=['POST'])
+@admin_required
+def admin_toggle_suspend(user_id):
+    db = get_db()
+    cursor = db.cursor()
+    cursor.execute("SELECT * FROM user WHERE id = ?", (user_id,))
+    target = cursor.fetchone()
+    if not target:
+        flash('사용자를 찾을 수 없습니다.')
+        return redirect(url_for('users'))
+    if target['is_admin'] or target['id'] == session['user_id']:
+        flash('관리자 계정은 휴면 처리할 수 없습니다.')
+        return redirect(url_for('user_detail', user_id=user_id))
+    new_status = 0 if target['is_suspended'] else 1
+    cursor.execute("UPDATE user SET is_suspended = ? WHERE id = ?", (new_status, user_id))
+    db.commit()
+    flash('휴면 계정으로 전환되었습니다.' if new_status else '휴면이 해제되었습니다.')
+    return redirect(url_for('user_detail', user_id=user_id))
+
+# 관리자: 회원 강제 탈퇴 (등록된 상품/이미지도 함께 삭제)
+@app.route('/admin/users/<user_id>/delete', methods=['POST'])
+@admin_required
+def admin_delete_user(user_id):
+    db = get_db()
+    cursor = db.cursor()
+    cursor.execute("SELECT * FROM user WHERE id = ?", (user_id,))
+    target = cursor.fetchone()
+    if not target:
+        flash('사용자를 찾을 수 없습니다.')
+        return redirect(url_for('users'))
+    if target['is_admin'] or target['id'] == session['user_id']:
+        flash('관리자 계정은 강제 탈퇴시킬 수 없습니다.')
+        return redirect(url_for('user_detail', user_id=user_id))
+    cursor.execute("SELECT id, image FROM product WHERE seller_id = ?", (user_id,))
+    for p in cursor.fetchall():
+        delete_product_image(p['image'])
+        cursor.execute("DELETE FROM product WHERE id = ?", (p['id'],))
+    cursor.execute("DELETE FROM user WHERE id = ?", (user_id,))
+    db.commit()
+    flash('사용자가 강제 탈퇴 처리되었습니다.')
+    return redirect(url_for('users'))
 
 # 1:1 채팅방 입장 (없으면 생성 후 대화 내역과 함께 렌더링)
 @app.route('/chat/<peer_id>')

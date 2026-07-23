@@ -9,7 +9,7 @@
 <ul>
   {% for u in users %}
     <li>
-      <a href="{{ url_for('user_detail', user_id=u.id) }}">{{ u.username }}(@{{ u.id }})</a>
+      <a href="{{ url_for('user_detail', user_id=u.id) }}">{{ u.username }}(@{{ u.id }})</a>{% if u.is_suspended %} [휴면]{% endif %}
     </li>
   {% else %}
     <li>검색 결과가 없습니다.</li>
