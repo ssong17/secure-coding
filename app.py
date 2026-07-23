@@ -178,6 +178,8 @@ def init_db():
             cursor.execute("ALTER TABLE product ADD COLUMN is_hidden INTEGER NOT NULL DEFAULT 0")
         if 'is_sold' not in product_columns:
             cursor.execute("ALTER TABLE product ADD COLUMN is_sold INTEGER NOT NULL DEFAULT 0")
+        # 상품명 검색 성능을 위한 인덱스
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_product_title ON product(title)")
         # 신고 테이블 생성
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS report (
@@ -353,7 +355,7 @@ def logout():
 
 PRODUCTS_PER_PAGE = 10
 
-# 대시보드: 사용자 정보와 상품 리스트를 페이지당 10개씩 표시
+# 대시보드: 사용자 정보와 상품 리스트를 페이지당 10개씩 표시, 상품명 키워드 검색 지원
 @app.route('/dashboard')
 def dashboard():
     if 'user_id' not in session:
@@ -368,25 +370,45 @@ def dashboard():
     if not page or page < 1:
         page = 1
     offset = (page - 1) * PRODUCTS_PER_PAGE
+    query = request.args.get('q', '').strip()
 
-    # 상품 조회: 관리자는 숨김 상품까지 모두, 일반 사용자는 숨겨지지 않은 상품만
+    # 상품 조회: 관리자는 숨김 상품까지 모두, 일반 사용자는 숨겨지지 않은 상품만. 검색어가 있으면 상품명 기준으로 필터링
     if current_user['is_admin']:
-        cursor.execute("SELECT COUNT(*) AS c FROM product")
-        total_count = cursor.fetchone()['c']
-        cursor.execute("SELECT * FROM product ORDER BY rowid DESC LIMIT ? OFFSET ?", (PRODUCTS_PER_PAGE, offset))
+        if query:
+            cursor.execute("SELECT COUNT(*) AS c FROM product WHERE title LIKE ?", ('%' + query + '%',))
+            total_count = cursor.fetchone()['c']
+            cursor.execute(
+                "SELECT * FROM product WHERE title LIKE ? ORDER BY rowid DESC LIMIT ? OFFSET ?",
+                ('%' + query + '%', PRODUCTS_PER_PAGE, offset)
+            )
+        else:
+            cursor.execute("SELECT COUNT(*) AS c FROM product")
+            total_count = cursor.fetchone()['c']
+            cursor.execute("SELECT * FROM product ORDER BY rowid DESC LIMIT ? OFFSET ?", (PRODUCTS_PER_PAGE, offset))
     else:
-        cursor.execute("SELECT COUNT(*) AS c FROM product WHERE is_hidden = 0")
-        total_count = cursor.fetchone()['c']
-        cursor.execute(
-            "SELECT * FROM product WHERE is_hidden = 0 ORDER BY rowid DESC LIMIT ? OFFSET ?",
-            (PRODUCTS_PER_PAGE, offset)
-        )
+        if query:
+            cursor.execute(
+                "SELECT COUNT(*) AS c FROM product WHERE is_hidden = 0 AND title LIKE ?",
+                ('%' + query + '%',)
+            )
+            total_count = cursor.fetchone()['c']
+            cursor.execute(
+                "SELECT * FROM product WHERE is_hidden = 0 AND title LIKE ? ORDER BY rowid DESC LIMIT ? OFFSET ?",
+                ('%' + query + '%', PRODUCTS_PER_PAGE, offset)
+            )
+        else:
+            cursor.execute("SELECT COUNT(*) AS c FROM product WHERE is_hidden = 0")
+            total_count = cursor.fetchone()['c']
+            cursor.execute(
+                "SELECT * FROM product WHERE is_hidden = 0 ORDER BY rowid DESC LIMIT ? OFFSET ?",
+                (PRODUCTS_PER_PAGE, offset)
+            )
     page_products = cursor.fetchall()
     total_pages = max(1, (total_count + PRODUCTS_PER_PAGE - 1) // PRODUCTS_PER_PAGE)
 
     return render_template(
         'dashboard.html', products=page_products, user=current_user,
-        page=page, total_pages=total_pages
+        page=page, total_pages=total_pages, query=query
     )
 
 # 프로필 페이지: bio 업데이트 가능

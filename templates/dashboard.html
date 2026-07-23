@@ -3,6 +3,10 @@
 {% block content %}
 <h2>대시보드</h2>
 <h3>등록된 상품</h3>
+<form method="get" action="{{ url_for('dashboard') }}">
+  <input type="text" name="q" placeholder="상품명으로 검색" value="{{ query }}">
+  <button type="submit">검색</button>
+</form>
 <ul>
   {% for product in products %}
     <li>
@@ -13,7 +17,11 @@
       - 가격: {{ product.price }}{% if product.is_sold %} [판매완료]{% endif %}{% if product.is_hidden %} [숨김]{% endif %}
     </li>
   {% else %}
-    <li>등록된 상품이 없습니다.</li>
+    {% if query %}
+      <li>"{{ query }}"에 대한 검색 결과가 없습니다.</li>
+    {% else %}
+      <li>등록된 상품이 없습니다.</li>
+    {% endif %}
   {% endfor %}
 </ul>
 
@@ -23,7 +31,7 @@
     {% if p == page %}
       <strong>{{ p }}</strong>
     {% else %}
-      <a href="{{ url_for('dashboard', page=p) }}">{{ p }}</a>
+      <a href="{{ url_for('dashboard', page=p, q=query) }}">{{ p }}</a>
     {% endif %}
   {% endfor %}
 </p>
