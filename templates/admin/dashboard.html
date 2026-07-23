@@ -3,9 +3,10 @@
 {% block content %}
 <h2>관리자 대시보드</h2>
 <ul>
-  <li>전체 회원 수: {{ user_count }}명</li>
-  <li>전체 상품 수: {{ product_count }}개</li>
-  <li>누적 신고 건수: {{ report_count }}건</li>
+  <li>전체 회원 수: {{ user_count }}명 (<a href="{{ url_for('users') }}">사용자 조회에서 관리</a>)</li>
+  <li>전체 상품 수: {{ product_count }}개 (<a href="{{ url_for('dashboard') }}">대시보드에서 관리</a>)</li>
+  <li>누적 신고 건수: {{ report_count }}건 (<a href="{{ url_for('admin_reports') }}">신고 관리</a>)</li>
+  <li><a href="{{ url_for('admin_chats') }}">채팅 관리</a> (1:1 대화방 열람 / 전체 채팅 로그)</li>
 </ul>
-<p>유저 관리 / 상품 관리 / 신고 관리 / 채팅 모니터링 메뉴는 추후 순차적으로 추가될 예정입니다.</p>
+<p>회원/상품 관리는 각각 사용자 상세, 상품 상세 페이지에서 관리자에게만 보이는 메뉴로 처리합니다.</p>
 {% endblock %}

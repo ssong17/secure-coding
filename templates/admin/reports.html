@@ -1,0 +1,40 @@
+{% extends "base.html" %}
+{% block title %}신고 관리{% endblock %}
+{% block content %}
+<h2>신고 관리</h2>
+<p><a href="{{ url_for('admin_dashboard') }}">관리자 대시보드로</a></p>
+<table style="width: 100%; border-collapse: collapse;">
+  <tr style="text-align: left; border-bottom: 1px solid #e0e0e0;">
+    <th>신고자</th>
+    <th>대상 유형</th>
+    <th>대상</th>
+    <th>사유</th>
+    <th>상태</th>
+    <th>접수일시</th>
+    <th>처리</th>
+  </tr>
+  {% for r in reports %}
+  <tr style="border-bottom: 1px solid #e0e0e0;">
+    <td>{{ r.reporter_name }}(@{{ r.reporter_id }})</td>
+    <td>{{ '사용자' if r.target_type == 'user' else '상품' }}</td>
+    <td>
+      {% if r.target_type == 'user' %}
+        <a href="{{ url_for('user_detail', user_id=r.target_id) }}">{{ r.target_id }}</a>
+      {% else %}
+        <a href="{{ url_for('view_product', product_id=r.target_id) }}">{{ r.target_id }}</a>
+      {% endif %}
+    </td>
+    <td>{{ r.reason }}</td>
+    <td>{{ '처리완료' if r.status == 'resolved' else '대기' }}</td>
+    <td>{{ r.created_at }}</td>
+    <td>
+      <form method="post" action="{{ url_for('admin_toggle_report_status', report_id=r.id) }}">
+        <button type="submit" style="width: auto;">{{ '대기로 되돌리기' if r.status == 'resolved' else '처리완료로 표시' }}</button>
+      </form>
+    </td>
+  </tr>
+  {% else %}
+  <tr><td colspan="7">접수된 신고가 없습니다.</td></tr>
+  {% endfor %}
+</table>
+{% endblock %}

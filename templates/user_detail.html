@@ -3,6 +3,9 @@
 {% block content %}
 <h2>{{ user.username }}(@{{ user.id }}){% if user.is_suspended %} [휴면]{% endif %}</h2>
 <p>{{ user.bio if user.bio else '소개글이 없습니다.' }}</p>
+{% if user.id != session.get('user_id') %}
+<p><a href="{{ url_for('report', target_type='user', target_id=user.id) }}">신고하기</a></p>
+{% endif %}
 <p><a href="{{ url_for('users') }}">목록으로</a></p>
 
 {% if session.get('is_admin') and not user.is_admin and user.id != session.get('user_id') %}
