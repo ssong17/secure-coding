@@ -15,21 +15,31 @@
   </tr>
   {% for r in reports %}
   <tr style="border-bottom: 1px solid #e0e0e0;">
-    <td>{{ r.reporter_name }}(@{{ r.reporter_id }})</td>
+    <td>
+      {{ r.reporter_name }}(@{{ r.reporter_id }})
+      {% if r.reporter_false_count > 0 %}<br><small>허위 신고 {{ r.reporter_false_count }}건</small>{% endif %}
+    </td>
     <td>{{ '사용자' if r.target_type == 'user' else '상품' }}</td>
     <td>
       {% if r.target_type == 'user' %}
         <a href="{{ url_for('user_detail', user_id=r.target_id) }}">{{ r.target_id }}</a>
+        {% if r.target_accepted_count > 0 %}<br><small>수락된 신고 {{ r.target_accepted_count }}건</small>{% endif %}
       {% else %}
         <a href="{{ url_for('view_product', product_id=r.target_id) }}">{{ r.target_id }}</a>
       {% endif %}
     </td>
     <td>{{ r.reason }}</td>
-    <td>{{ '처리완료' if r.status == 'resolved' else '대기' }}</td>
-    <td>{{ r.created_at }}</td>
+    <td>{{ {'accepted': '수락', 'rejected': '거절'}.get(r.status, '대기') }}</td>
+    <td>{{ r.created_at | fmt_datetime }}</td>
     <td>
-      <form method="post" action="{{ url_for('admin_toggle_report_status', report_id=r.id) }}">
-        <button type="submit" style="width: auto;">{{ '대기로 되돌리기' if r.status == 'resolved' else '처리완료로 표시' }}</button>
+      <form method="post" action="{{ url_for('admin_accept_report', report_id=r.id) }}" style="display: inline;">
+        <button type="submit" style="width: auto;">수락</button>
+      </form>
+      <form method="post" action="{{ url_for('admin_reject_report', report_id=r.id) }}" style="display: inline;">
+        <button type="submit" style="width: auto;">거절</button>
+      </form>
+      <form method="post" action="{{ url_for('admin_delete_report', report_id=r.id) }}" style="display: inline;" onsubmit="return confirm('이 신고 내역을 삭제하시겠습니까?');">
+        <button type="submit" style="width: auto;">삭제</button>
       </form>
     </td>
   </tr>
@@ -37,4 +47,5 @@
   <tr><td colspan="7">접수된 신고가 없습니다.</td></tr>
   {% endfor %}
 </table>
+<p style="color: #888;">수락된 신고가 회원당 {{ auto_suspend_threshold }}건 이상 쌓이면 해당 회원이 자동으로 휴면 처리되고, 거절된(허위) 신고가 {{ auto_suspend_false_threshold }}건 이상이면 신고자가 자동으로 휴면 처리됩니다.</p>
 {% endblock %}

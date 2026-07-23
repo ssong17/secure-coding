@@ -6,7 +6,7 @@
 <p>최근 200건까지 표시됩니다.</p>
 <ul>
   {% for m in messages %}
-    <li><strong>{{ m.sender_name }}(@{{ m.sender_id }})</strong> [{{ m.created_at }}]: {{ m.content }}</li>
+    <li><strong>{{ m.sender_name }}(@{{ m.sender_id }})</strong> [{{ m.created_at | fmt_datetime }}]: {{ m.content }}</li>
   {% else %}
     <li>메시지가 없습니다.</li>
   {% endfor %}

@@ -12,6 +12,13 @@ app.config['SECRET_KEY'] = 'secret!'
 DATABASE = 'market.db'
 socketio = SocketIO(app)
 
+# isoformat 시각 문자열(예: 2026-07-23T06:04:01.180464)을 "2026-07-23 06:04:01" 형태로 표시
+@app.template_filter('fmt_datetime')
+def fmt_datetime(value):
+    if not value:
+        return '-'
+    return value.replace('T', ' ')[:19]
+
 # 상품 이미지 업로드 설정
 UPLOAD_FOLDER = os.path.join(app.root_path, 'static', 'uploads')
 ALLOWED_IMAGE_EXTENSIONS = {'png', 'jpg', 'jpeg', 'gif', 'webp'}
@@ -80,6 +87,36 @@ def admin_required(f):
             return redirect(url_for('dashboard'))
         return f(*args, **kwargs)
     return decorated
+
+# 신고 누적에 따른 자동 조치 기준
+AUTO_SUSPEND_REPORT_THRESHOLD = 3       # 수락된 신고가 이 횟수 이상이면 대상 회원 자동 휴면
+AUTO_SUSPEND_FALSE_REPORT_THRESHOLD = 3  # 거절된(허위) 신고가 이 횟수 이상이면 신고자 자동 휴면
+
+# 신고 대상 회원의 누적 수락 신고 수를 확인해 기준치 이상이면 자동 휴면 처리 (관리자 계정 제외)
+def maybe_auto_suspend_reported_user(cursor, target_id):
+    cursor.execute(
+        "SELECT COUNT(*) AS c FROM report WHERE target_type = 'user' AND target_id = ? AND status = 'accepted'",
+        (target_id,)
+    )
+    if cursor.fetchone()['c'] < AUTO_SUSPEND_REPORT_THRESHOLD:
+        return
+    cursor.execute("SELECT is_admin, is_suspended FROM user WHERE id = ?", (target_id,))
+    target = cursor.fetchone()
+    if target and not target['is_admin'] and not target['is_suspended']:
+        cursor.execute("UPDATE user SET is_suspended = 1 WHERE id = ?", (target_id,))
+
+# 신고자의 누적 거절(허위) 신고 수를 확인해 기준치 이상이면 자동 휴면 처리 (관리자 계정 제외)
+def maybe_auto_suspend_false_reporter(cursor, reporter_id):
+    cursor.execute(
+        "SELECT COUNT(*) AS c FROM report WHERE reporter_id = ? AND status = 'rejected'",
+        (reporter_id,)
+    )
+    if cursor.fetchone()['c'] < AUTO_SUSPEND_FALSE_REPORT_THRESHOLD:
+        return
+    cursor.execute("SELECT is_admin, is_suspended FROM user WHERE id = ?", (reporter_id,))
+    reporter = cursor.fetchone()
+    if reporter and not reporter['is_admin'] and not reporter['is_suspended']:
+        cursor.execute("UPDATE user SET is_suspended = 1 WHERE id = ?", (reporter_id,))
 
 # 테이블 생성 (최초 실행 시에만)
 def init_db():
@@ -261,7 +298,9 @@ def logout():
     flash('로그아웃되었습니다.')
     return redirect(url_for('index'))
 
-# 대시보드: 사용자 정보와 전체 상품 리스트 표시
+PRODUCTS_PER_PAGE = 10
+
+# 대시보드: 사용자 정보와 상품 리스트를 페이지당 10개씩 표시
 @app.route('/dashboard')
 def dashboard():
     if 'user_id' not in session:
@@ -271,13 +310,31 @@ def dashboard():
     # 현재 사용자 조회
     cursor.execute("SELECT * FROM user WHERE id = ?", (session['user_id'],))
     current_user = cursor.fetchone()
+
+    page = request.args.get('page', 1, type=int)
+    if not page or page < 1:
+        page = 1
+    offset = (page - 1) * PRODUCTS_PER_PAGE
+
     # 상품 조회: 관리자는 숨김 상품까지 모두, 일반 사용자는 숨겨지지 않은 상품만
     if current_user['is_admin']:
-        cursor.execute("SELECT * FROM product")
+        cursor.execute("SELECT COUNT(*) AS c FROM product")
+        total_count = cursor.fetchone()['c']
+        cursor.execute("SELECT * FROM product ORDER BY rowid DESC LIMIT ? OFFSET ?", (PRODUCTS_PER_PAGE, offset))
     else:
-        cursor.execute("SELECT * FROM product WHERE is_hidden = 0")
-    all_products = cursor.fetchall()
-    return render_template('dashboard.html', products=all_products, user=current_user)
+        cursor.execute("SELECT COUNT(*) AS c FROM product WHERE is_hidden = 0")
+        total_count = cursor.fetchone()['c']
+        cursor.execute(
+            "SELECT * FROM product WHERE is_hidden = 0 ORDER BY rowid DESC LIMIT ? OFFSET ?",
+            (PRODUCTS_PER_PAGE, offset)
+        )
+    page_products = cursor.fetchall()
+    total_pages = max(1, (total_count + PRODUCTS_PER_PAGE - 1) // PRODUCTS_PER_PAGE)
+
+    return render_template(
+        'dashboard.html', products=page_products, user=current_user,
+        page=page, total_pages=total_pages
+    )
 
 # 프로필 페이지: bio 업데이트 가능
 @app.route('/profile', methods=['GET', 'POST'])
@@ -339,17 +396,19 @@ def users():
     query = request.args.get('q', '').strip()
     db = get_db()
     cursor = db.cursor()
+    # 관리자 계정은 아이디 유출 방지를 위해 조회 대상에서 제외
     if query:
         cursor.execute(
-            "SELECT id, username, bio, is_suspended FROM user WHERE username LIKE ? OR id LIKE ? ORDER BY username",
+            "SELECT id, username, bio, is_suspended FROM user "
+            "WHERE (username LIKE ? OR id LIKE ?) AND is_admin = 0 ORDER BY username",
             ('%' + query + '%', '%' + query + '%')
         )
     else:
-        cursor.execute("SELECT id, username, bio, is_suspended FROM user ORDER BY username")
+        cursor.execute("SELECT id, username, bio, is_suspended FROM user WHERE is_admin = 0 ORDER BY username")
     results = cursor.fetchall()
     return render_template('users.html', users=results, query=query)
 
-# 사용자 상세 정보 조회
+# 사용자 상세 정보 조회 (관리자 계정은 아이디 유출 방지를 위해 조회 불가)
 @app.route('/user/<user_id>')
 def user_detail(user_id):
     if 'user_id' not in session:
@@ -358,15 +417,15 @@ def user_detail(user_id):
     cursor = db.cursor()
     cursor.execute("SELECT id, username, bio, is_admin, is_suspended FROM user WHERE id = ?", (user_id,))
     found_user = cursor.fetchone()
-    if not found_user:
+    if not found_user or found_user['is_admin']:
         flash('사용자를 찾을 수 없습니다.')
         return redirect(url_for('users'))
     return render_template('user_detail.html', user=found_user)
 
-# 관리자: 회원 휴면 전환/해제 (관리자 계정, 본인 제외)
-@app.route('/admin/users/<user_id>/toggle-suspend', methods=['POST'])
+# 관리자: 회원 휴면 해제 (휴면 전환은 신고 누적에 따라 자동으로만 이뤄지고, 해제는 관리자가 수동으로 처리)
+@app.route('/admin/users/<user_id>/unsuspend', methods=['POST'])
 @admin_required
-def admin_toggle_suspend(user_id):
+def admin_unsuspend_user(user_id):
     db = get_db()
     cursor = db.cursor()
     cursor.execute("SELECT * FROM user WHERE id = ?", (user_id,))
@@ -375,12 +434,11 @@ def admin_toggle_suspend(user_id):
         flash('사용자를 찾을 수 없습니다.')
         return redirect(url_for('users'))
     if target['is_admin'] or target['id'] == session['user_id']:
-        flash('관리자 계정은 휴면 처리할 수 없습니다.')
+        flash('관리자 계정은 대상이 될 수 없습니다.')
         return redirect(url_for('user_detail', user_id=user_id))
-    new_status = 0 if target['is_suspended'] else 1
-    cursor.execute("UPDATE user SET is_suspended = ? WHERE id = ?", (new_status, user_id))
+    cursor.execute("UPDATE user SET is_suspended = 0 WHERE id = ?", (user_id,))
     db.commit()
-    flash('휴면 계정으로 전환되었습니다.' if new_status else '휴면이 해제되었습니다.')
+    flash('휴면이 해제되었습니다.')
     return redirect(url_for('user_detail', user_id=user_id))
 
 # 관리자: 회원 강제 탈퇴 (등록된 상품/이미지도 함께 삭제)
@@ -602,24 +660,32 @@ def report():
     target_id = request.args.get('target_id', '')
     return render_template('report.html', target_type=target_type, target_id=target_id)
 
-# 관리자: 신고 내역 조회 (신고자/대상/사유/처리상태)
+# 관리자: 신고 내역 조회 (신고자/대상/사유/처리상태, 대상·신고자의 누적 건수도 함께 표시)
 @app.route('/admin/reports')
 @admin_required
 def admin_reports():
     db = get_db()
     cursor = db.cursor()
     cursor.execute("""
-        SELECT r.*, u.username AS reporter_name
+        SELECT r.*, u.username AS reporter_name,
+               (SELECT COUNT(*) FROM report fr WHERE fr.reporter_id = r.reporter_id AND fr.status = 'rejected')
+                   AS reporter_false_count,
+               (SELECT COUNT(*) FROM report tr WHERE tr.target_type = 'user' AND tr.target_id = r.target_id
+                   AND tr.status = 'accepted') AS target_accepted_count
         FROM report r JOIN user u ON r.reporter_id = u.id
         ORDER BY r.created_at DESC
     """)
     reports = cursor.fetchall()
-    return render_template('admin/reports.html', reports=reports)
+    return render_template(
+        'admin/reports.html', reports=reports,
+        auto_suspend_threshold=AUTO_SUSPEND_REPORT_THRESHOLD,
+        auto_suspend_false_threshold=AUTO_SUSPEND_FALSE_REPORT_THRESHOLD
+    )
 
-# 관리자: 신고 처리 상태 토글 (대기 <-> 처리완료)
-@app.route('/admin/reports/<report_id>/toggle-status', methods=['POST'])
+# 관리자: 신고 수락 (대상이 회원이면 누적 수락 신고 수를 확인해 기준치 이상이면 자동 휴면)
+@app.route('/admin/reports/<report_id>/accept', methods=['POST'])
 @admin_required
-def admin_toggle_report_status(report_id):
+def admin_accept_report(report_id):
     db = get_db()
     cursor = db.cursor()
     cursor.execute("SELECT * FROM report WHERE id = ?", (report_id,))
@@ -627,10 +693,43 @@ def admin_toggle_report_status(report_id):
     if not target_report:
         flash('신고 내역을 찾을 수 없습니다.')
         return redirect(url_for('admin_reports'))
-    new_status = 'resolved' if target_report['status'] == 'pending' else 'pending'
-    cursor.execute("UPDATE report SET status = ? WHERE id = ?", (new_status, report_id))
+    cursor.execute("UPDATE report SET status = 'accepted' WHERE id = ?", (report_id,))
+    if target_report['target_type'] == 'user':
+        maybe_auto_suspend_reported_user(cursor, target_report['target_id'])
     db.commit()
-    flash('처리 상태가 변경되었습니다.')
+    flash('신고를 수락 처리했습니다.')
+    return redirect(url_for('admin_reports'))
+
+# 관리자: 신고 거절 (허위 신고 패널티 - 신고자의 누적 거절 수가 기준치 이상이면 자동 휴면)
+@app.route('/admin/reports/<report_id>/reject', methods=['POST'])
+@admin_required
+def admin_reject_report(report_id):
+    db = get_db()
+    cursor = db.cursor()
+    cursor.execute("SELECT * FROM report WHERE id = ?", (report_id,))
+    target_report = cursor.fetchone()
+    if not target_report:
+        flash('신고 내역을 찾을 수 없습니다.')
+        return redirect(url_for('admin_reports'))
+    cursor.execute("UPDATE report SET status = 'rejected' WHERE id = ?", (report_id,))
+    maybe_auto_suspend_false_reporter(cursor, target_report['reporter_id'])
+    db.commit()
+    flash('신고를 거절 처리했습니다.')
+    return redirect(url_for('admin_reports'))
+
+# 관리자: 신고 내역 삭제
+@app.route('/admin/reports/<report_id>/delete', methods=['POST'])
+@admin_required
+def admin_delete_report(report_id):
+    db = get_db()
+    cursor = db.cursor()
+    cursor.execute("SELECT 1 FROM report WHERE id = ?", (report_id,))
+    if cursor.fetchone() is None:
+        flash('신고 내역을 찾을 수 없습니다.')
+        return redirect(url_for('admin_reports'))
+    cursor.execute("DELETE FROM report WHERE id = ?", (report_id,))
+    db.commit()
+    flash('신고 내역이 삭제되었습니다.')
     return redirect(url_for('admin_reports'))
 
 # 관리자 대시보드: 전체 현황 요약

@@ -17,7 +17,7 @@
   <tr style="border-bottom: 1px solid #e0e0e0;">
     <td>{{ c.user_a_name }}(@{{ c.user_a_id }}) / {{ c.user_b_name }}(@{{ c.user_b_id }})</td>
     <td>{{ c.message_count }}</td>
-    <td>{{ c.last_message_at or '-' }}</td>
+    <td>{{ c.last_message_at | fmt_datetime }}</td>
     <td><a href="{{ url_for('admin_chat_detail', conversation_id=c.id) }}">대화 보기</a></td>
   </tr>
   {% else %}
