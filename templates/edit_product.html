@@ -1,0 +1,17 @@
+{% extends "base.html" %}
+{% block title %}상품 수정{% endblock %}
+{% block content %}
+<h2>상품 수정</h2>
+<form method="post" enctype="multipart/form-data">
+  제목: <input type="text" name="title" value="{{ product.title }}" required><br>
+  설명: <br>
+  <textarea name="description" rows="4" cols="50" required>{{ product.description }}</textarea><br>
+  가격: <input type="text" name="price" value="{{ product.price }}" required><br>
+  {% if product.image %}
+  현재 사진: <br>
+  <img src="{{ url_for('static', filename='uploads/' + product.image) }}" alt="{{ product.title }}" style="max-width: 200px; display: block; margin-bottom: 10px;">
+  {% endif %}
+  사진 변경(선택, 비워두면 기존 사진 유지): <input type="file" name="image" accept="image/png,image/jpeg,image/gif,image/webp"><br>
+  <button type="submit">수정하기</button>
+</form>
+{% endblock %}

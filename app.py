@@ -20,6 +20,26 @@ os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 def allowed_image(filename):
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_IMAGE_EXTENSIONS
 
+# 업로드된 이미지를 검증 후 uuid 파일명으로 저장, 저장된 파일명을 반환 (파일이 없으면 None)
+def save_product_image(image_file):
+    if not image_file or not image_file.filename:
+        return None
+    if not allowed_image(image_file.filename):
+        raise ValueError('png, jpg, jpeg, gif, webp 형식의 이미지만 업로드할 수 있습니다.')
+    ext = secure_filename(image_file.filename).rsplit('.', 1)[1].lower()
+    filename = f"{uuid.uuid4()}.{ext}"
+    os.makedirs(UPLOAD_FOLDER, exist_ok=True)
+    image_file.save(os.path.join(UPLOAD_FOLDER, filename))
+    return filename
+
+# 상품 이미지 파일 삭제 (존재할 때만)
+def delete_product_image(filename):
+    if not filename:
+        return
+    path = os.path.join(UPLOAD_FOLDER, filename)
+    if os.path.exists(path):
+        os.remove(path)
+
 # 데이터베이스 연결 관리: 요청마다 연결 생성 후 사용, 종료 시 close
 def get_db():
     db = getattr(g, '_database', None)
@@ -307,16 +327,11 @@ def new_product():
         description = request.form['description']
         price = request.form['price']
 
-        image_filename = None
-        image_file = request.files.get('image')
-        if image_file and image_file.filename:
-            if not allowed_image(image_file.filename):
-                flash('png, jpg, jpeg, gif, webp 형식의 이미지만 업로드할 수 있습니다.')
-                return redirect(url_for('new_product'))
-            ext = secure_filename(image_file.filename).rsplit('.', 1)[1].lower()
-            image_filename = f"{uuid.uuid4()}.{ext}"
-            os.makedirs(UPLOAD_FOLDER, exist_ok=True)
-            image_file.save(os.path.join(UPLOAD_FOLDER, image_filename))
+        try:
+            image_filename = save_product_image(request.files.get('image'))
+        except ValueError as e:
+            flash(str(e))
+            return redirect(url_for('new_product'))
 
         db = get_db()
         cursor = db.cursor()
@@ -329,6 +344,70 @@ def new_product():
         flash('상품이 등록되었습니다.')
         return redirect(url_for('dashboard'))
     return render_template('new_product.html')
+
+# 상품 수정 (판매자 본인만 가능, 새 사진을 올리면 기존 사진을 교체)
+@app.route('/product/<product_id>/edit', methods=['GET', 'POST'])
+def edit_product(product_id):
+    if 'user_id' not in session:
+        return redirect(url_for('login'))
+    db = get_db()
+    cursor = db.cursor()
+    cursor.execute("SELECT * FROM product WHERE id = ?", (product_id,))
+    product = cursor.fetchone()
+    if not product:
+        flash('상품을 찾을 수 없습니다.')
+        return redirect(url_for('dashboard'))
+    if product['seller_id'] != session['user_id']:
+        flash('본인이 등록한 상품만 수정할 수 있습니다.')
+        return redirect(url_for('view_product', product_id=product_id))
+
+    if request.method == 'POST':
+        title = request.form['title']
+        description = request.form['description']
+        price = request.form['price']
+
+        try:
+            new_filename = save_product_image(request.files.get('image'))
+        except ValueError as e:
+            flash(str(e))
+            return redirect(url_for('edit_product', product_id=product_id))
+
+        if new_filename:
+            delete_product_image(product['image'])
+            image_filename = new_filename
+        else:
+            image_filename = product['image']
+
+        cursor.execute(
+            "UPDATE product SET title = ?, description = ?, price = ?, image = ? WHERE id = ?",
+            (title, description, price, image_filename, product_id)
+        )
+        db.commit()
+        flash('상품이 수정되었습니다.')
+        return redirect(url_for('view_product', product_id=product_id))
+
+    return render_template('edit_product.html', product=product)
+
+# 상품 삭제 (판매자 본인만 가능)
+@app.route('/product/<product_id>/delete', methods=['POST'])
+def delete_product(product_id):
+    if 'user_id' not in session:
+        return redirect(url_for('login'))
+    db = get_db()
+    cursor = db.cursor()
+    cursor.execute("SELECT * FROM product WHERE id = ?", (product_id,))
+    product = cursor.fetchone()
+    if not product:
+        flash('상품을 찾을 수 없습니다.')
+        return redirect(url_for('dashboard'))
+    if product['seller_id'] != session['user_id']:
+        flash('본인이 등록한 상품만 삭제할 수 있습니다.')
+        return redirect(url_for('view_product', product_id=product_id))
+    delete_product_image(product['image'])
+    cursor.execute("DELETE FROM product WHERE id = ?", (product_id,))
+    db.commit()
+    flash('상품이 삭제되었습니다.')
+    return redirect(url_for('dashboard'))
 
 # 상품 상세보기
 @app.route('/product/<product_id>')

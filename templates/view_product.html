@@ -11,4 +11,12 @@
 {% if seller and seller.id != session.get('user_id') %}
 <p><a href="{{ url_for('chat', peer_id=seller.id) }}">문의하기</a></p>
 {% endif %}
+{% if seller and seller.id == session.get('user_id') %}
+<p>
+  <a href="{{ url_for('edit_product', product_id=product.id) }}">수정</a>
+  <form method="post" action="{{ url_for('delete_product', product_id=product.id) }}" style="display: inline;" onsubmit="return confirm('정말 삭제하시겠습니까?');">
+    <button type="submit" style="width: auto;">삭제</button>
+  </form>
+</p>
+{% endif %}
 {% endblock %}
