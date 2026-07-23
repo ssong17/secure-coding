@@ -1,29 +1,120 @@
 # Secure Coding
 
-## Tiny Secondhand Shopping Platform.
+## Tiny Secondhand Shopping Platform
 
-You should add some functions and complete the security requirements.
+중고 물품을 등록·구매하고, 실시간 채팅으로 문의하며, 신고/정지 등 관리자 기능까지 갖춘 Flask 기반 중고거래 플랫폼입니다.
 
-## requirements
+## Requirements
 
-if you don't have a miniconda(or anaconda), you can install it on this url. - https://docs.anaconda.com/free/miniconda/index.html
+미니콘다(또는 아나콘다)가 없다면 아래 링크에서 설치할 수 있습니다. - https://docs.anaconda.com/free/miniconda/index.html
 
-```
-git clone https://github.com/ugonfor/secure-coding
+```bash
+git clone https://github.com/ssong17/secure-coding
+cd secure-coding
 conda env create -f enviroments.yaml
+conda activate secure_coding
 ```
 
-## usage
+## Usage
 
-run the server process.
+### 1. 환경변수 설정 (선택 — 로컬 개발 시에는 없어도 실행됨)
 
-```
+| 환경변수 | 기본값 | 설명 |
+|---|---|---|
+| `SECRET_KEY` | 미설정 시 매 기동마다 무작위 생성 | 세션/CSRF 서명 키. 운영 배포 시에는 반드시 고정값으로 설정할 것(설정하지 않으면 서버 재시작마다 기존 세션이 전부 끊김) |
+| `FLASK_DEBUG` | `0` (꺼짐) | `1`로 설정하면 Werkzeug 인터랙티브 디버거가 켜짐. 로컬 개발용으로만 사용하고 운영 환경에서는 절대 켜지 말 것(임의 코드 실행 가능) |
+| `SESSION_COOKIE_SECURE` | `0` (꺼짐) | `1`로 설정하면 세션 쿠키에 Secure 플래그가 붙어 HTTPS에서만 전송됨. HTTPS로 배포할 때만 켤 것(로컬 HTTP 환경에서 켜면 쿠키가 아예 전송되지 않아 로그인이 되지 않음) |
+
+### 2. 서버 실행
+
+```bash
 python app.py
 ```
 
-if you want to test on external machine, you can utilize the ngrok to forwarding the url.
-```
+최초 실행 시 `market.db`가 자동 생성되고, 관리자 계정(`admin` / `admin1234`)이 자동으로 시드됩니다. **관리자로 로그인한 뒤 마이페이지에서 비밀번호부터 바로 변경하는 것을 권장합니다.**
+
+브라우저에서 http://localhost:5000 으로 접속합니다.
+
+### 3. 외부 기기에서 접속 테스트 (선택)
+
+```bash
 # optional
 sudo snap install ngrok
 ngrok http 5000
 ```
+
+## 테스트 가이드
+
+### 준비
+
+- 회원가입으로 일반 사용자 계정을 2개 이상 만들어두면 구매·채팅·신고 등 계정 간 상호작용 기능을 테스트하기 편합니다.
+- 관리자 계정: `admin` / `admin1234` (최초 1회 자동 생성, 마이페이지에서 비밀번호 변경 권장)
+
+### 기능별 체크리스트
+
+**회원가입 / 로그인**
+- [ ] 아이디를 3자 미만이거나 20자 초과, 또는 영문·숫자·밑줄(`_`) 외 문자로 입력하면 거부되는지
+- [ ] 비밀번호를 8자 미만으로 입력하면 거부되는지
+- [ ] 이미 존재하는 아이디/닉네임으로 가입을 시도하면 거부되는지
+- [ ] 로그인 실패를 5회 반복하면 5분간 계정이 잠기는지(잠긴 동안은 올바른 비밀번호를 입력해도 로그인이 안 되어야 함)
+- [ ] 정지된 계정으로 로그인을 시도하면 차단되는지
+
+**마이페이지**
+- [ ] 닉네임 변경, 자기소개 수정이 정상 반영되는지 (닉네임 중복 시 거부되는지도 함께 확인)
+- [ ] 비밀번호 변경 시 현재 비밀번호가 틀리면 거부되는지, 변경 후 새 비밀번호로 재로그인이 되는지(기존 비밀번호로는 안 되는지)
+- [ ] 잔액 충전이 일일 50만원 / 월 300만원 한도를 넘으면 거부되는지
+- [ ] 잔액 출금이 보유 잔액을 넘으면 거부되는지
+- [ ] 송금 내역(보낸/받은) 페이지에서 구매·판매 이력이 정상적으로 조회되는지
+
+**상품**
+- [ ] 상품 등록 시 제목/설명이 비어있거나, 가격에 문자·음수를 입력하면 거부되는지
+- [ ] 이미지 업로드 시 png/jpg/jpeg/gif/webp 외 확장자는 거부되는지, 5MB를 초과하는 파일은 거부되는지
+- [ ] 본인이 등록한 상품만 수정/삭제할 수 있는지(다른 계정으로 URL 직접 접근 시 차단되는지)
+- [ ] 구매 버튼으로 구매하면 잔액이 차감되고 상품이 "판매완료"로 바뀌며, 같은 상품을 다시 구매할 수 없는지
+- [ ] 11개 이상 상품 등록 후 페이지네이션(2페이지 이상)과 상품명 검색이 정상 동작하는지
+- [ ] 신고 누적(3건)으로 등록이 제한된 계정이 새 상품을 등록하려 하면 차단되는지
+
+**채팅**
+- [ ] 상품 상세 "문의하기"로 들어간 채팅방에서 해당 상품 가격만큼만 구매 버튼이 뜨는지(연결되지 않은 채팅에는 구매 버튼이 없는지)
+- [ ] 그룹 채팅과 1:1 채팅 메시지가 실시간으로 상대방에게 전달되는지
+- [ ] 500자를 초과하는 메시지, 10초 내 10건을 초과하는 메시지가 서버에서 제한되는지(초과분은 전송되지 않아야 함)
+- [ ] 다른 사람의 1:1 대화방 id를 임의로 넣어 join을 시도해도 참여할 수 없는지
+
+**신고**
+- [ ] 사용자/상품 신고 시 사유를 입력하지 않거나 500자를 초과하면 거부되는지
+- [ ] 신고가 관리자 화면에 접수되고, 수락 시 대상의 누적 수락 신고 수가 올라가는지(3건 이상 → 상품 등록 제한, 5건 이상 → 자동 정지)
+- [ ] 거절된(허위) 신고가 신고자 기준 3건 이상 쌓이면 신고자 본인이 자동 정지되는지
+
+**관리자**
+- [ ] 관리자 계정이 아니면 `/admin` 이하 모든 경로 접근이 차단되는지
+- [ ] 회원 강제 탈퇴, 정지 해제/재정지, 상품 숨기기/삭제, 신고 수락/거절/삭제, 거래 내역 조회, 채팅 모니터링이 각각 정상 동작하는지
+- [ ] 관리자 계정 본인과 다른 관리자 계정은 정지·탈퇴 대상에서 제외되는지
+- [ ] 25만원 이상 고액 거래, 10분 내 5건 이상 반복 송금 시 발신자가 자동 정지되는지
+
+### 보안 점검용 테스트
+
+- [ ] 로그인 없이 `/dashboard`, `/profile`, `/admin` 등에 직접 접근하면 로그인 페이지로 리다이렉트되는지
+- [ ] 일반 계정으로 `/admin` 이하 경로에 직접 접근하면 차단되는지
+- [ ] 개발자 도구(F12) → Application → Cookies에서 세션 쿠키에 `HttpOnly` 속성이 붙어 있는지(콘솔에서 `document.cookie`를 입력해도 세션 쿠키가 보이지 않아야 함)
+- [ ] 응답 헤더(F12 → Network)에 `Content-Security-Policy`, `X-Frame-Options`, `X-Content-Type-Options`, `Referrer-Policy`가 포함되어 있는지
+- [ ] 로그인/회원가입 등 폼에서 `csrf_token` 값을 지우거나 다른 값으로 바꿔 제출하면 400 에러가 나는지
+- [ ] 상품 제목/설명, 채팅 메시지, 신고 사유, 자기소개 등에 `<script>alert(1)</script>` 같은 문자열을 입력해도 스크립트가 실행되지 않고 그대로 문자열로 표시되는지(XSS 방어 확인)
+- [ ] 검색창(`/users?q=`, `/dashboard?q=`)이나 로그인 폼에 `' OR '1'='1` 같은 SQL 인젝션 페이로드를 입력해도 에러 없이 정상적으로 처리(로그인 실패/검색결과 없음)되는지
+- [ ] 로그인 실패를 5회 이상 반복해 계정이 잠긴 상태에서, 잠금이 풀리기 전까지는 올바른 비밀번호로도 로그인이 안 되는지
+
+### 자동화 테스트
+
+기능을 하나 구현할 때마다 Flask 테스트 클라이언트 기반 스크립트로 회귀 테스트를 진행했습니다(정상 동작, 권한 검증, 동시성/원자성, 입력값 검증을 매번 함께 확인). 직접 검증하려면 아래처럼 `app.py`를 임포트해 테스트 클라이언트를 사용하면 됩니다.
+
+```python
+import app as appmodule
+flask_app = appmodule.app
+flask_app.config['TESTING'] = True
+flask_app.config['WTF_CSRF_ENABLED'] = False  # CSRF 토큰 없이 기능만 빠르게 테스트할 때
+client = flask_app.test_client()
+client.post('/register', data={'id': 'tester1', 'username': '테스터', 'password': 'longenough1'})
+client.post('/login', data={'id': 'tester1', 'password': 'longenough1'})
+...
+```
+
+**주의**: `market.db`는 서버 실행 중 계속 갱신되는 파일이므로, 테스트 전후로 백업·복원(`cp market.db market.db.bak` → 테스트 → `mv market.db.bak market.db`)하는 것을 권장합니다.
