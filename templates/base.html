@@ -92,6 +92,9 @@
       <a href="{{ url_for('profile') }}">프로필</a>
       <a href="{{ url_for('users') }}">사용자 조회</a>
       <a href="{{ url_for('report') }}">신고하기</a>
+      {% if session.get('is_admin') %}
+      <a href="{{ url_for('admin_dashboard') }}">관리자</a>
+      {% endif %}
       <a href="{{ url_for('logout') }}">로그아웃</a>
     {% else %}
       <a href="{{ url_for('login') }}">로그인</a>

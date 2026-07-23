@@ -2,6 +2,7 @@ import os
 import sqlite3
 import uuid
 import datetime
+from functools import wraps
 from flask import Flask, render_template, request, redirect, url_for, session, flash, g
 from flask_socketio import SocketIO, send, join_room, emit
 from werkzeug.utils import secure_filename
@@ -54,6 +55,22 @@ def close_connection(exception):
     if db is not None:
         db.close()
 
+# 관리자 전용 라우트 보호 데코레이터 (세션이 아닌 DB의 is_admin을 기준으로 매번 검증)
+def admin_required(f):
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        if 'user_id' not in session:
+            return redirect(url_for('login'))
+        db = get_db()
+        cursor = db.cursor()
+        cursor.execute("SELECT is_admin FROM user WHERE id = ?", (session['user_id'],))
+        row = cursor.fetchone()
+        if not row or not row['is_admin']:
+            flash('관리자만 접근할 수 있습니다.')
+            return redirect(url_for('dashboard'))
+        return f(*args, **kwargs)
+    return decorated
+
 # 테이블 생성 (최초 실행 시에만)
 def init_db():
     with app.app_context():
@@ -65,9 +82,22 @@ def init_db():
                 id TEXT PRIMARY KEY,
                 username TEXT UNIQUE NOT NULL,
                 password TEXT NOT NULL,
-                bio TEXT
+                bio TEXT,
+                is_admin INTEGER NOT NULL DEFAULT 0
             )
         """)
+        # 기존 DB에 is_admin 컬럼이 없으면 추가 (마이그레이션)
+        cursor.execute("PRAGMA table_info(user)")
+        user_columns = [row[1] for row in cursor.fetchall()]
+        if 'is_admin' not in user_columns:
+            cursor.execute("ALTER TABLE user ADD COLUMN is_admin INTEGER NOT NULL DEFAULT 0")
+        # 관리자 계정이 하나도 없으면 기본 관리자 계정 시드 생성
+        cursor.execute("SELECT 1 FROM user WHERE is_admin = 1")
+        if cursor.fetchone() is None:
+            cursor.execute(
+                "INSERT OR IGNORE INTO user (id, username, password, is_admin) VALUES (?, ?, ?, 1)",
+                ('admin', '관리자', 'admin1234')
+            )
         # 상품 테이블 생성
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS product (
@@ -176,6 +206,7 @@ def login():
         user = cursor.fetchone()
         if user:
             session['user_id'] = user['id']
+            session['is_admin'] = bool(user['is_admin'])
             flash('로그인 성공!')
             return redirect(url_for('dashboard'))
         else:
@@ -187,6 +218,7 @@ def login():
 @app.route('/logout')
 def logout():
     session.pop('user_id', None)
+    session.pop('is_admin', None)
     flash('로그아웃되었습니다.')
     return redirect(url_for('index'))
 
@@ -443,6 +475,23 @@ def report():
         flash('신고가 접수되었습니다.')
         return redirect(url_for('dashboard'))
     return render_template('report.html')
+
+# 관리자 대시보드: 전체 현황 요약
+@app.route('/admin')
+@admin_required
+def admin_dashboard():
+    db = get_db()
+    cursor = db.cursor()
+    cursor.execute("SELECT COUNT(*) AS c FROM user")
+    user_count = cursor.fetchone()['c']
+    cursor.execute("SELECT COUNT(*) AS c FROM product")
+    product_count = cursor.fetchone()['c']
+    cursor.execute("SELECT COUNT(*) AS c FROM report")
+    report_count = cursor.fetchone()['c']
+    return render_template(
+        'admin/dashboard.html',
+        user_count=user_count, product_count=product_count, report_count=report_count
+    )
 
 # 실시간 채팅: 클라이언트가 메시지를 보내면 전체 브로드캐스트
 @socketio.on('send_message')
