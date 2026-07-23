@@ -1,13 +1,24 @@
+import os
 import sqlite3
 import uuid
 import datetime
 from flask import Flask, render_template, request, redirect, url_for, session, flash, g
 from flask_socketio import SocketIO, send, join_room, emit
+from werkzeug.utils import secure_filename
 
 app = Flask(__name__)
 app.config['SECRET_KEY'] = 'secret!'
 DATABASE = 'market.db'
 socketio = SocketIO(app)
+
+# 상품 이미지 업로드 설정
+UPLOAD_FOLDER = os.path.join(app.root_path, 'static', 'uploads')
+ALLOWED_IMAGE_EXTENSIONS = {'png', 'jpg', 'jpeg', 'gif', 'webp'}
+app.config['MAX_CONTENT_LENGTH'] = 5 * 1024 * 1024  # 업로드 용량 5MB 제한
+os.makedirs(UPLOAD_FOLDER, exist_ok=True)
+
+def allowed_image(filename):
+    return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_IMAGE_EXTENSIONS
 
 # 데이터베이스 연결 관리: 요청마다 연결 생성 후 사용, 종료 시 close
 def get_db():
@@ -47,6 +58,11 @@ def init_db():
                 seller_id TEXT NOT NULL
             )
         """)
+        # 기존 DB에 image 컬럼이 없으면 추가 (마이그레이션)
+        cursor.execute("PRAGMA table_info(product)")
+        product_columns = [row[1] for row in cursor.fetchall()]
+        if 'image' not in product_columns:
+            cursor.execute("ALTER TABLE product ADD COLUMN image TEXT")
         # 신고 테이블 생성
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS report (
@@ -290,12 +306,24 @@ def new_product():
         title = request.form['title']
         description = request.form['description']
         price = request.form['price']
+
+        image_filename = None
+        image_file = request.files.get('image')
+        if image_file and image_file.filename:
+            if not allowed_image(image_file.filename):
+                flash('png, jpg, jpeg, gif, webp 형식의 이미지만 업로드할 수 있습니다.')
+                return redirect(url_for('new_product'))
+            ext = secure_filename(image_file.filename).rsplit('.', 1)[1].lower()
+            image_filename = f"{uuid.uuid4()}.{ext}"
+            os.makedirs(UPLOAD_FOLDER, exist_ok=True)
+            image_file.save(os.path.join(UPLOAD_FOLDER, image_filename))
+
         db = get_db()
         cursor = db.cursor()
         product_id = str(uuid.uuid4())
         cursor.execute(
-            "INSERT INTO product (id, title, description, price, seller_id) VALUES (?, ?, ?, ?, ?)",
-            (product_id, title, description, price, session['user_id'])
+            "INSERT INTO product (id, title, description, price, seller_id, image) VALUES (?, ?, ?, ?, ?, ?)",
+            (product_id, title, description, price, session['user_id'], image_filename)
         )
         db.commit()
         flash('상품이 등록되었습니다.')

@@ -1,3 +1,4 @@
 *.db
 *.pptx
 __pycache__
+static/uploads/
