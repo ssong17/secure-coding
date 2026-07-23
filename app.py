@@ -88,8 +88,9 @@ def admin_required(f):
         return f(*args, **kwargs)
     return decorated
 
-# 신고 누적에 따른 자동 조치 기준
-AUTO_SUSPEND_REPORT_THRESHOLD = 3       # 수락된 신고가 이 횟수 이상이면 대상 회원 자동 휴면
+# 신고 누적에 따른 자동 조치 기준 (단계적 페널티)
+PRODUCT_BAN_REPORT_THRESHOLD = 3        # 수락된 신고가 이 횟수 이상이면 상품 등록 제한
+AUTO_SUSPEND_REPORT_THRESHOLD = 5       # 수락된 신고가 이 횟수 이상이면 대상 회원 자동 휴면
 AUTO_SUSPEND_FALSE_REPORT_THRESHOLD = 3  # 거절된(허위) 신고가 이 횟수 이상이면 신고자 자동 휴면
 
 # 회원 본인에 대한 신고 + 본인이 등록한 상품에 대한 신고를 합산해 누적 수락 신고 수를 계산
@@ -251,6 +252,15 @@ def init_db():
         # 잔액 충전 내역 테이블 생성 (일일/월간 충전 한도 계산용)
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS charge_log (
+                id TEXT PRIMARY KEY,
+                user_id TEXT NOT NULL,
+                amount INTEGER NOT NULL,
+                created_at TEXT NOT NULL
+            )
+        """)
+        # 잔액 출금 내역 테이블 생성
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS withdraw_log (
                 id TEXT PRIMARY KEY,
                 user_id TEXT NOT NULL,
                 amount INTEGER NOT NULL,
@@ -685,11 +695,17 @@ def buy_product(product_id):
     flash(f'{product["title"]}을(를) {amount:,}원에 구매했습니다.')
     return redirect(url_for('view_product', product_id=product_id))
 
-# 상품 등록
+# 상품 등록 (누적 수락 신고가 기준치 이상이면 등록 제한)
 @app.route('/product/new', methods=['GET', 'POST'])
 def new_product():
     if 'user_id' not in session:
         return redirect(url_for('login'))
+    db = get_db()
+    cursor = db.cursor()
+    if count_accepted_reports_against_user(cursor, session['user_id']) >= PRODUCT_BAN_REPORT_THRESHOLD:
+        flash('누적된 신고로 인해 상품 등록이 제한되었습니다.')
+        return redirect(url_for('dashboard'))
+
     if request.method == 'POST':
         title = request.form['title']
         description = request.form['description']
@@ -701,8 +717,6 @@ def new_product():
             flash(str(e))
             return redirect(url_for('new_product'))
 
-        db = get_db()
-        cursor = db.cursor()
         product_id = str(uuid.uuid4())
         cursor.execute(
             "INSERT INTO product (id, title, description, price, seller_id, image) VALUES (?, ?, ?, ?, ?, ?)",
