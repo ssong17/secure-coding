@@ -17,12 +17,16 @@
   <form method="post" action="{{ url_for('admin_unsuspend_user', user_id=user.id) }}" style="display: inline;">
     <button type="submit" style="width: auto;">휴면 해제</button>
   </form>
+  {% elif report_count is not none and report_count >= auto_suspend_threshold %}
+  <form method="post" action="{{ url_for('admin_suspend_user', user_id=user.id) }}" style="display: inline;">
+    <button type="submit" style="width: auto;">휴면 전환</button>
+  </form>
   {% endif %}
   <form method="post" action="{{ url_for('admin_delete_user', user_id=user.id) }}" style="display: inline;" onsubmit="return confirm('정말 이 사용자를 강제 탈퇴시키겠습니까? 등록된 상품도 함께 삭제됩니다.');">
     <button type="submit" style="width: auto;">강제 탈퇴</button>
   </form>
 </p>
-{% if not user.is_suspended %}
+{% if not user.is_suspended and (report_count is none or report_count < auto_suspend_threshold) %}
 <p style="color: #888;">휴면 전환은 누적 신고가 기준치를 넘으면 자동으로 처리됩니다.</p>
 {% endif %}
 {% endif %}

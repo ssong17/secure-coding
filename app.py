@@ -454,6 +454,28 @@ def admin_unsuspend_user(user_id):
     flash('휴면이 해제되었습니다.')
     return redirect(url_for('user_detail', user_id=user_id))
 
+# 관리자: 회원 휴면 재전환 (해제 후에도 누적 수락 신고가 기준치 이상으로 남아있으면 다시 휴면 처리 가능)
+@app.route('/admin/users/<user_id>/suspend', methods=['POST'])
+@admin_required
+def admin_suspend_user(user_id):
+    db = get_db()
+    cursor = db.cursor()
+    cursor.execute("SELECT * FROM user WHERE id = ?", (user_id,))
+    target = cursor.fetchone()
+    if not target:
+        flash('사용자를 찾을 수 없습니다.')
+        return redirect(url_for('users'))
+    if target['is_admin'] or target['id'] == session['user_id']:
+        flash('관리자 계정은 대상이 될 수 없습니다.')
+        return redirect(url_for('user_detail', user_id=user_id))
+    if count_accepted_reports_against_user(cursor, user_id) < AUTO_SUSPEND_REPORT_THRESHOLD:
+        flash('누적 수락 신고가 기준치 미만이라 휴면 전환할 수 없습니다.')
+        return redirect(url_for('user_detail', user_id=user_id))
+    cursor.execute("UPDATE user SET is_suspended = 1 WHERE id = ?", (user_id,))
+    db.commit()
+    flash('휴면 계정으로 전환되었습니다.')
+    return redirect(url_for('user_detail', user_id=user_id))
+
 # 관리자: 회원 강제 탈퇴 (등록된 상품/이미지도 함께 삭제)
 @app.route('/admin/users/<user_id>/delete', methods=['POST'])
 @admin_required
@@ -477,7 +499,7 @@ def admin_delete_user(user_id):
     flash('사용자가 강제 탈퇴 처리되었습니다.')
     return redirect(url_for('users'))
 
-# 1:1 채팅방 입장 (없으면 생성 후 대화 내역과 함께 렌더링)
+# 1:1 채팅방 입장 (없으면 생성 후 대화 내역과 함께 렌더링, ?product_id= 로 들어오면 해당 상품을 대화방에 연결)
 @app.route('/chat/<peer_id>')
 def chat(peer_id):
     if 'user_id' not in session:
@@ -493,6 +515,22 @@ def chat(peer_id):
         flash('사용자를 찾을 수 없습니다.')
         return redirect(url_for('users'))
     conversation_id = get_or_create_conversation(db, session['user_id'], peer_id)
+
+    # 상품 상세의 "문의하기"로 들어온 경우, 해당 상품(판매자가 peer일 때만)을 대화방에 연결
+    product_id_param = request.args.get('product_id')
+    if product_id_param:
+        cursor.execute("SELECT id FROM product WHERE id = ? AND seller_id = ?", (product_id_param, peer_id))
+        if cursor.fetchone():
+            cursor.execute("UPDATE conversation SET product_id = ? WHERE id = ?", (product_id_param, conversation_id))
+            db.commit()
+
+    cursor.execute("SELECT product_id FROM conversation WHERE id = ?", (conversation_id,))
+    linked_product_id = cursor.fetchone()['product_id']
+    linked_product = None
+    if linked_product_id:
+        cursor.execute("SELECT * FROM product WHERE id = ?", (linked_product_id,))
+        linked_product = cursor.fetchone()
+
     cursor.execute("""
         SELECT m.content, m.created_at, m.sender_id, u.username AS sender_name
         FROM message m JOIN user u ON m.sender_id = u.id
@@ -502,8 +540,62 @@ def chat(peer_id):
     history = cursor.fetchall()
     return render_template(
         'chat.html', peer=peer, conversation_id=conversation_id,
-        history=history, my_id=session['user_id']
+        history=history, my_id=session['user_id'], linked_product=linked_product
     )
+
+# 상품 구매 (= 상품 가격만큼 판매자에게 송금). 잔액/판매 여부를 조건부 UPDATE로 원자적으로 검증해
+# 동시 요청에도 잔액이 음수가 되거나 같은 상품이 중복 판매되지 않도록 함
+@app.route('/product/<product_id>/buy', methods=['POST'])
+def buy_product(product_id):
+    if 'user_id' not in session:
+        return redirect(url_for('login'))
+    db = get_db()
+    cursor = db.cursor()
+    cursor.execute("SELECT * FROM product WHERE id = ?", (product_id,))
+    product = cursor.fetchone()
+    if not product:
+        flash('상품을 찾을 수 없습니다.')
+        return redirect(url_for('dashboard'))
+    if product['seller_id'] == session['user_id']:
+        flash('본인이 등록한 상품은 구매할 수 없습니다.')
+        return redirect(url_for('view_product', product_id=product_id))
+    if product['is_sold']:
+        flash('이미 판매 완료된 상품입니다.')
+        return redirect(url_for('view_product', product_id=product_id))
+    if product['is_hidden']:
+        flash('구매할 수 없는 상품입니다.')
+        return redirect(url_for('view_product', product_id=product_id))
+    if not product['price'].isdigit() or int(product['price']) <= 0:
+        flash('상품 가격 정보가 올바르지 않아 구매할 수 없습니다.')
+        return redirect(url_for('view_product', product_id=product_id))
+    amount = int(product['price'])
+
+    # 잔액 확인과 차감을 하나의 조건부 UPDATE로 원자적으로 처리 (TOCTOU 경쟁 상태 방지)
+    cursor.execute(
+        "UPDATE user SET balance = balance - ? WHERE id = ? AND balance >= ?",
+        (amount, session['user_id'], amount)
+    )
+    if cursor.rowcount == 0:
+        db.rollback()
+        flash('잔액이 부족합니다.')
+        return redirect(url_for('view_product', product_id=product_id))
+
+    # 판매완료 처리도 조건부 UPDATE로 원자 처리 (동시에 여러 명이 구매를 시도해도 한 명만 성공)
+    cursor.execute("UPDATE product SET is_sold = 1 WHERE id = ? AND is_sold = 0", (product_id,))
+    if cursor.rowcount == 0:
+        db.rollback()
+        flash('이미 판매 완료된 상품입니다.')
+        return redirect(url_for('view_product', product_id=product_id))
+
+    cursor.execute("UPDATE user SET balance = balance + ? WHERE id = ?", (amount, product['seller_id']))
+    transfer_id = str(uuid.uuid4())
+    cursor.execute(
+        "INSERT INTO transfer (id, sender_id, receiver_id, amount, product_id, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+        (transfer_id, session['user_id'], product['seller_id'], amount, product_id, datetime.datetime.utcnow().isoformat())
+    )
+    db.commit()
+    flash(f'{product["title"]}을(를) {amount:,}원에 구매했습니다.')
+    return redirect(url_for('view_product', product_id=product_id))
 
 # 상품 등록
 @app.route('/product/new', methods=['GET', 'POST'])
