@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% block title %}사용자 정보{% endblock %}
 {% block content %}
-<h2>{{ user.username }}(@{{ user.id }}){% if user.is_suspended %} [휴면]{% endif %}</h2>
+<h2>{{ user.username }}(@{{ user.id }}){% if user.is_suspended %} [정지]{% endif %}</h2>
 <p>{{ user.bio if user.bio else '소개글이 없습니다.' }}</p>
 {% if user.id != session.get('user_id') %}
 <p><a href="{{ url_for('report', target_type='user', target_id=user.id) }}">신고하기</a></p>
@@ -13,17 +13,17 @@
 <h3>관리자 메뉴</h3>
 <p>
   신고당한 횟수(수락된 신고, 본인 신고 + 등록 상품 신고 합산): {{ report_count }}건
-  / 상품 등록 제한 기준 {{ product_ban_threshold }}건 / 자동 휴면 기준 {{ auto_suspend_threshold }}건
+  / 상품 등록 제한 기준 {{ product_ban_threshold }}건 / 자동 정지 기준 {{ auto_suspend_threshold }}건
   {% if report_count is not none and report_count >= product_ban_threshold %}<br>(현재 상품 등록이 제한된 상태입니다.){% endif %}
 </p>
 <p>
   {% if user.is_suspended %}
   <form method="post" action="{{ url_for('admin_unsuspend_user', user_id=user.id) }}" style="display: inline;">
-    <button type="submit" style="width: auto;">휴면 해제</button>
+    <button type="submit" style="width: auto;">정지 해제</button>
   </form>
   {% elif report_count is not none and report_count >= auto_suspend_threshold %}
   <form method="post" action="{{ url_for('admin_suspend_user', user_id=user.id) }}" style="display: inline;">
-    <button type="submit" style="width: auto;">휴면 전환</button>
+    <button type="submit" style="width: auto;">정지 전환</button>
   </form>
   {% endif %}
   <form method="post" action="{{ url_for('admin_delete_user', user_id=user.id) }}" style="display: inline;" onsubmit="return confirm('정말 이 사용자를 강제 탈퇴시키겠습니까? 등록된 상품도 함께 삭제됩니다.');">
@@ -31,7 +31,7 @@
   </form>
 </p>
 {% if not user.is_suspended and (report_count is none or report_count < auto_suspend_threshold) %}
-<p style="color: #888;">휴면 전환은 누적 신고가 기준치를 넘으면 자동으로 처리됩니다.</p>
+<p style="color: #888;">정지 전환은 누적 신고가 기준치를 넘으면 자동으로 처리됩니다.</p>
 {% endif %}
 {% endif %}
 {% endblock %}

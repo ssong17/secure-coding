@@ -1,0 +1,37 @@
+{% extends "base.html" %}
+{% block title %}거래 관리{% endblock %}
+{% block content %}
+<h2>거래 관리</h2>
+<p><a href="{{ url_for('admin_dashboard') }}">관리자 대시보드로</a></p>
+<p style="color: #888;">
+  고액 거래 기준: {{ '{:,}'.format(large_transfer_threshold) }}원 이상 /
+  반복 거래 기준: {{ rapid_transfer_window }}분 내 동일 발신자 {{ rapid_transfer_threshold }}건 이상
+</p>
+<table style="width: 100%; border-collapse: collapse;">
+  <tr style="text-align: left; border-bottom: 1px solid #e0e0e0;">
+    <th>보낸 사람</th>
+    <th>받은 사람</th>
+    <th>금액</th>
+    <th>관련 상품</th>
+    <th>시각</th>
+    <th>이상 거래</th>
+  </tr>
+  {% for t in transfers %}
+  <tr style="border-bottom: 1px solid #e0e0e0;">
+    <td><a href="{{ url_for('user_detail', user_id=t.sender_id) }}">{{ t.sender_name }}(@{{ t.sender_id }})</a></td>
+    <td><a href="{{ url_for('user_detail', user_id=t.receiver_id) }}">{{ t.receiver_name }}(@{{ t.receiver_id }})</a></td>
+    <td{% if t.amount >= large_transfer_threshold %} style="color: #d32f2f; font-weight: bold;"{% endif %}>
+      {{ '{:,}'.format(t.amount) }}원
+    </td>
+    <td>{{ t.product_title or '-' }}</td>
+    <td>{{ t.created_at | fmt_datetime }}</td>
+    <td>
+      {% if t.amount >= large_transfer_threshold %}고액{% endif %}
+      {% if t.id in rapid_flagged_ids %}반복{% endif %}
+    </td>
+  </tr>
+  {% else %}
+  <tr><td colspan="6">거래 내역이 없습니다.</td></tr>
+  {% endfor %}
+</table>
+{% endblock %}

@@ -72,6 +72,16 @@ def current_user_is_admin():
     row = cursor.fetchone()
     return bool(row and row['is_admin'])
 
+# 현재 로그인한 사용자가 정지 상태인지 DB 기준으로 확인 (로그인 시점 이후 정지되어도 즉시 반영되도록 매번 재조회)
+def current_user_is_suspended():
+    if 'user_id' not in session:
+        return False
+    db = get_db()
+    cursor = db.cursor()
+    cursor.execute("SELECT is_suspended FROM user WHERE id = ?", (session['user_id'],))
+    row = cursor.fetchone()
+    return bool(row and row['is_suspended'])
+
 # 관리자 전용 라우트 보호 데코레이터 (세션이 아닌 DB의 is_admin을 기준으로 매번 검증)
 def admin_required(f):
     @wraps(f)
@@ -90,8 +100,13 @@ def admin_required(f):
 
 # 신고 누적에 따른 자동 조치 기준 (단계적 페널티)
 PRODUCT_BAN_REPORT_THRESHOLD = 3        # 수락된 신고가 이 횟수 이상이면 상품 등록 제한
-AUTO_SUSPEND_REPORT_THRESHOLD = 5       # 수락된 신고가 이 횟수 이상이면 대상 회원 자동 휴면
-AUTO_SUSPEND_FALSE_REPORT_THRESHOLD = 3  # 거절된(허위) 신고가 이 횟수 이상이면 신고자 자동 휴면
+AUTO_SUSPEND_REPORT_THRESHOLD = 5       # 수락된 신고가 이 횟수 이상이면 대상 회원 자동 정지
+AUTO_SUSPEND_FALSE_REPORT_THRESHOLD = 3  # 거절된(허위) 신고가 이 횟수 이상이면 신고자 자동 정지
+
+# 이상 거래 탐지 기준
+LARGE_TRANSFER_THRESHOLD = 250000        # 이 금액 이상이면 고액 거래로 표시하고 발신자를 자동 정지
+RAPID_TRANSFER_COUNT_THRESHOLD = 5       # 아래 시간 내에 동일 발신자가 이 건수 이상 보내면 표시
+RAPID_TRANSFER_WINDOW_MINUTES = 10
 
 # 회원 본인에 대한 신고 + 본인이 등록한 상품에 대한 신고를 합산해 누적 수락 신고 수를 계산
 def count_accepted_reports_against_user(cursor, user_id):
@@ -104,7 +119,7 @@ def count_accepted_reports_against_user(cursor, user_id):
     """, (user_id, user_id))
     return cursor.fetchone()['c']
 
-# 신고 대상 회원의 누적 수락 신고 수(본인 + 본인 상품)를 확인해 기준치 이상이면 자동 휴면 처리 (관리자 계정 제외)
+# 신고 대상 회원의 누적 수락 신고 수(본인 + 본인 상품)를 확인해 기준치 이상이면 자동 정지 처리 (관리자 계정 제외)
 def maybe_auto_suspend_reported_user(cursor, target_id):
     if count_accepted_reports_against_user(cursor, target_id) < AUTO_SUSPEND_REPORT_THRESHOLD:
         return
@@ -113,7 +128,7 @@ def maybe_auto_suspend_reported_user(cursor, target_id):
     if target and not target['is_admin'] and not target['is_suspended']:
         cursor.execute("UPDATE user SET is_suspended = 1 WHERE id = ?", (target_id,))
 
-# 신고자의 누적 거절(허위) 신고 수를 확인해 기준치 이상이면 자동 휴면 처리 (관리자 계정 제외)
+# 신고자의 누적 거절(허위) 신고 수를 확인해 기준치 이상이면 자동 정지 처리 (관리자 계정 제외)
 def maybe_auto_suspend_false_reporter(cursor, reporter_id):
     cursor.execute(
         "SELECT COUNT(*) AS c FROM report WHERE reporter_id = ? AND status = 'rejected'",
@@ -125,6 +140,26 @@ def maybe_auto_suspend_false_reporter(cursor, reporter_id):
     reporter = cursor.fetchone()
     if reporter and not reporter['is_admin'] and not reporter['is_suspended']:
         cursor.execute("UPDATE user SET is_suspended = 1 WHERE id = ?", (reporter_id,))
+
+# 방금 발생한 거래가 이상 거래(고액 / 짧은 시간 내 반복 송금)에 해당하면 발신자를 자동 정지 (관리자 계정 제외)
+# 정지되면 상품 등록/구매(송금)/출금이 모두 막히고, 해제는 관리자 확인 후 수동으로만 가능
+def check_and_suspend_if_anomalous_transfer(cursor, sender_id, amount, created_at):
+    is_anomalous = amount >= LARGE_TRANSFER_THRESHOLD
+    if not is_anomalous:
+        cursor.execute("SELECT created_at FROM transfer WHERE sender_id = ?", (sender_id,))
+        this_ts = datetime.datetime.fromisoformat(created_at)
+        window = datetime.timedelta(minutes=RAPID_TRANSFER_WINDOW_MINUTES)
+        count_in_window = sum(
+            1 for row in cursor.fetchall()
+            if abs(datetime.datetime.fromisoformat(row['created_at']) - this_ts) <= window
+        )
+        is_anomalous = count_in_window >= RAPID_TRANSFER_COUNT_THRESHOLD
+    if not is_anomalous:
+        return
+    cursor.execute("SELECT is_admin, is_suspended FROM user WHERE id = ?", (sender_id,))
+    sender = cursor.fetchone()
+    if sender and not sender['is_admin'] and not sender['is_suspended']:
+        cursor.execute("UPDATE user SET is_suspended = 1 WHERE id = ?", (sender_id,))
 
 # 테이블 생성 (최초 실행 시에만)
 def init_db():
@@ -334,7 +369,7 @@ def login():
         user = cursor.fetchone()
         if user:
             if user['is_suspended']:
-                flash('휴면 처리된 계정입니다. 관리자에게 문의해주세요.')
+                flash('정지 처리된 계정입니다. 관리자에게 문의해주세요.')
                 return redirect(url_for('login'))
             session['user_id'] = user['id']
             session['is_admin'] = bool(user['is_admin'])
@@ -520,6 +555,9 @@ def charge_balance():
 def withdraw_balance():
     if 'user_id' not in session:
         return redirect(url_for('login'))
+    if current_user_is_suspended():
+        flash('정지된 계정은 출금할 수 없습니다.')
+        return redirect(url_for('profile'))
     amount_raw = request.form.get('amount', '')
     if not amount_raw.isdigit() or int(amount_raw) <= 0:
         flash('출금 금액은 1 이상의 정수로 입력해주세요.')
@@ -614,7 +652,7 @@ def user_detail(user_id):
         auto_suspend_threshold=AUTO_SUSPEND_REPORT_THRESHOLD
     )
 
-# 관리자: 회원 휴면 해제 (휴면 전환은 신고 누적에 따라 자동으로만 이뤄지고, 해제는 관리자가 수동으로 처리)
+# 관리자: 회원 정지 해제 (정지 전환은 신고 누적에 따라 자동으로만 이뤄지고, 해제는 관리자가 수동으로 처리)
 @app.route('/admin/users/<user_id>/unsuspend', methods=['POST'])
 @admin_required
 def admin_unsuspend_user(user_id):
@@ -630,10 +668,10 @@ def admin_unsuspend_user(user_id):
         return redirect(url_for('user_detail', user_id=user_id))
     cursor.execute("UPDATE user SET is_suspended = 0 WHERE id = ?", (user_id,))
     db.commit()
-    flash('휴면이 해제되었습니다.')
+    flash('정지이 해제되었습니다.')
     return redirect(url_for('user_detail', user_id=user_id))
 
-# 관리자: 회원 휴면 재전환 (해제 후에도 누적 수락 신고가 기준치 이상으로 남아있으면 다시 휴면 처리 가능)
+# 관리자: 회원 정지 재전환 (해제 후에도 누적 수락 신고가 기준치 이상으로 남아있으면 다시 정지 처리 가능)
 @app.route('/admin/users/<user_id>/suspend', methods=['POST'])
 @admin_required
 def admin_suspend_user(user_id):
@@ -648,11 +686,11 @@ def admin_suspend_user(user_id):
         flash('관리자 계정은 대상이 될 수 없습니다.')
         return redirect(url_for('user_detail', user_id=user_id))
     if count_accepted_reports_against_user(cursor, user_id) < AUTO_SUSPEND_REPORT_THRESHOLD:
-        flash('누적 수락 신고가 기준치 미만이라 휴면 전환할 수 없습니다.')
+        flash('누적 수락 신고가 기준치 미만이라 정지 전환할 수 없습니다.')
         return redirect(url_for('user_detail', user_id=user_id))
     cursor.execute("UPDATE user SET is_suspended = 1 WHERE id = ?", (user_id,))
     db.commit()
-    flash('휴면 계정으로 전환되었습니다.')
+    flash('정지 계정으로 전환되었습니다.')
     return redirect(url_for('user_detail', user_id=user_id))
 
 # 관리자: 회원 강제 탈퇴 (등록된 상품/이미지도 함께 삭제)
@@ -728,6 +766,9 @@ def chat(peer_id):
 def buy_product(product_id):
     if 'user_id' not in session:
         return redirect(url_for('login'))
+    if current_user_is_suspended():
+        flash('정지된 계정은 구매(송금)할 수 없습니다.')
+        return redirect(url_for('view_product', product_id=product_id))
     db = get_db()
     cursor = db.cursor()
     cursor.execute("SELECT * FROM product WHERE id = ?", (product_id,))
@@ -768,19 +809,24 @@ def buy_product(product_id):
 
     cursor.execute("UPDATE user SET balance = balance + ? WHERE id = ?", (amount, product['seller_id']))
     transfer_id = str(uuid.uuid4())
+    created_at = datetime.datetime.utcnow().isoformat()
     cursor.execute(
         "INSERT INTO transfer (id, sender_id, receiver_id, amount, product_id, created_at) VALUES (?, ?, ?, ?, ?, ?)",
-        (transfer_id, session['user_id'], product['seller_id'], amount, product_id, datetime.datetime.utcnow().isoformat())
+        (transfer_id, session['user_id'], product['seller_id'], amount, product_id, created_at)
     )
+    check_and_suspend_if_anomalous_transfer(cursor, session['user_id'], amount, created_at)
     db.commit()
     flash(f'{product["title"]}을(를) {amount:,}원에 구매했습니다.')
     return redirect(url_for('view_product', product_id=product_id))
 
-# 상품 등록 (누적 수락 신고가 기준치 이상이면 등록 제한)
+# 상품 등록 (정지 계정이거나 누적 수락 신고가 기준치 이상이면 등록 제한)
 @app.route('/product/new', methods=['GET', 'POST'])
 def new_product():
     if 'user_id' not in session:
         return redirect(url_for('login'))
+    if current_user_is_suspended():
+        flash('정지된 계정은 상품을 등록할 수 없습니다.')
+        return redirect(url_for('dashboard'))
     db = get_db()
     cursor = db.cursor()
     if count_accepted_reports_against_user(cursor, session['user_id']) >= PRODUCT_BAN_REPORT_THRESHOLD:
@@ -973,7 +1019,7 @@ def admin_reports():
         auto_suspend_false_threshold=AUTO_SUSPEND_FALSE_REPORT_THRESHOLD
     )
 
-# 관리자: 신고 수락 (대상 회원 또는 대상 상품의 판매자의 누적 수락 신고 수를 확인해 기준치 이상이면 자동 휴면)
+# 관리자: 신고 수락 (대상 회원 또는 대상 상품의 판매자의 누적 수락 신고 수를 확인해 기준치 이상이면 자동 정지)
 @app.route('/admin/reports/<report_id>/accept', methods=['POST'])
 @admin_required
 def admin_accept_report(report_id):
@@ -996,7 +1042,7 @@ def admin_accept_report(report_id):
     flash('신고를 수락 처리했습니다.')
     return redirect(url_for('admin_reports'))
 
-# 관리자: 신고 거절 (허위 신고 패널티 - 신고자의 누적 거절 수가 기준치 이상이면 자동 휴면)
+# 관리자: 신고 거절 (허위 신고 패널티 - 신고자의 누적 거절 수가 기준치 이상이면 자동 정지)
 @app.route('/admin/reports/<report_id>/reject', methods=['POST'])
 @admin_required
 def admin_reject_report(report_id):
@@ -1028,7 +1074,7 @@ def admin_delete_report(report_id):
     flash('신고 내역이 삭제되었습니다.')
     return redirect(url_for('admin_reports'))
 
-# 관리자 대시보드: 전체 현황 요약
+# 관리자 대시보드: 전체 현황 요약 (가입자 수, 상품/거래 현황, 신고 건수 등 통계)
 @app.route('/admin')
 @admin_required
 def admin_dashboard():
@@ -1036,13 +1082,61 @@ def admin_dashboard():
     cursor = db.cursor()
     cursor.execute("SELECT COUNT(*) AS c FROM user")
     user_count = cursor.fetchone()['c']
+    cursor.execute("SELECT COUNT(*) AS c FROM user WHERE is_suspended = 1")
+    suspended_count = cursor.fetchone()['c']
     cursor.execute("SELECT COUNT(*) AS c FROM product")
     product_count = cursor.fetchone()['c']
+    cursor.execute("SELECT COUNT(*) AS c FROM product WHERE is_sold = 1")
+    sold_count = cursor.fetchone()['c']
     cursor.execute("SELECT COUNT(*) AS c FROM report")
     report_count = cursor.fetchone()['c']
+    cursor.execute("SELECT COUNT(*) AS c, COALESCE(SUM(amount), 0) AS total FROM transfer")
+    transfer_row = cursor.fetchone()
+    transfer_count = transfer_row['c']
+    transfer_total = transfer_row['total']
     return render_template(
         'admin/dashboard.html',
-        user_count=user_count, product_count=product_count, report_count=report_count
+        user_count=user_count, suspended_count=suspended_count,
+        product_count=product_count, sold_count=sold_count,
+        report_count=report_count,
+        transfer_count=transfer_count, transfer_total=transfer_total
+    )
+
+# 관리자: 전체 거래(송금) 내역 조회 + 이상 거래 탐지(고액 거래 / 짧은 시간 내 반복 송금)
+@app.route('/admin/transfers')
+@admin_required
+def admin_transfers():
+    db = get_db()
+    cursor = db.cursor()
+    cursor.execute("""
+        SELECT t.*, s.username AS sender_name, r.username AS receiver_name, p.title AS product_title
+        FROM transfer t
+        JOIN user s ON t.sender_id = s.id
+        JOIN user r ON t.receiver_id = r.id
+        LEFT JOIN product p ON t.product_id = p.id
+        ORDER BY t.created_at DESC
+    """)
+    transfers = cursor.fetchall()
+
+    # 동일 발신자가 짧은 시간 내에 반복 송금한 거래를 탐지
+    sender_records = {}
+    for t in transfers:
+        sender_records.setdefault(t['sender_id'], []).append((t['created_at'], t['id']))
+    window = datetime.timedelta(minutes=RAPID_TRANSFER_WINDOW_MINUTES)
+    rapid_flagged_ids = set()
+    for records in sender_records.values():
+        parsed = [(datetime.datetime.fromisoformat(ts), tid) for ts, tid in records]
+        for ts, tid in parsed:
+            count_in_window = sum(1 for other_ts, _ in parsed if abs(other_ts - ts) <= window)
+            if count_in_window >= RAPID_TRANSFER_COUNT_THRESHOLD:
+                rapid_flagged_ids.add(tid)
+
+    return render_template(
+        'admin/transfers.html', transfers=transfers,
+        large_transfer_threshold=LARGE_TRANSFER_THRESHOLD,
+        rapid_transfer_threshold=RAPID_TRANSFER_COUNT_THRESHOLD,
+        rapid_transfer_window=RAPID_TRANSFER_WINDOW_MINUTES,
+        rapid_flagged_ids=rapid_flagged_ids
     )
 
 # 관리자: 1:1 대화방 목록 (참여자, 메시지 수, 마지막 대화 시각)
