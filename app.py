@@ -517,9 +517,12 @@ def dashboard():
     cursor.execute("SELECT * FROM user WHERE id = ?", (session['user_id'],))
     current_user = cursor.fetchone()
 
+    # page 값도 SQLite INTEGER(64비트) 범위를 넘으면 OFFSET 파라미터 바인딩 시 OverflowError가 나므로 상한을 둔다.
     page = request.args.get('page', 1, type=int)
     if not page or page < 1:
         page = 1
+    elif page > 1_000_000:
+        page = 1_000_000
     offset = (page - 1) * PRODUCTS_PER_PAGE
     query = request.args.get('q', '').strip()
 
