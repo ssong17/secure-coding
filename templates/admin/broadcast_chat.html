@@ -1,0 +1,14 @@
+{% extends "base.html" %}
+{% block title %}전체 채팅 로그{% endblock %}
+{% block content %}
+<h2>전체 채팅(그룹 채팅) 로그</h2>
+<p><a href="{{ url_for('admin_chats') }}">채팅 관리로</a></p>
+<p>최근 200건까지 표시됩니다.</p>
+<ul>
+  {% for m in messages %}
+    <li><strong>{{ m.sender_name }}(@{{ m.sender_id }})</strong> [{{ m.created_at }}]: {{ m.content }}</li>
+  {% else %}
+    <li>메시지가 없습니다.</li>
+  {% endfor %}
+</ul>
+{% endblock %}

@@ -1,0 +1,13 @@
+{% extends "base.html" %}
+{% block title %}대화 내용{% endblock %}
+{% block content %}
+<h2>{{ conv.user_a_name }}(@{{ conv.user_a_id }}) / {{ conv.user_b_name }}(@{{ conv.user_b_id }})</h2>
+<p><a href="{{ url_for('admin_chats') }}">채팅 관리로</a></p>
+<ul>
+  {% for m in messages %}
+    <li><strong>{{ m.sender_name }}(@{{ m.sender_id }})</strong> [{{ m.created_at }}]: {{ m.content }}</li>
+  {% else %}
+    <li>메시지가 없습니다.</li>
+  {% endfor %}
+</ul>
+{% endblock %}

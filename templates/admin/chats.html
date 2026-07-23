@@ -1,0 +1,27 @@
+{% extends "base.html" %}
+{% block title %}채팅 관리{% endblock %}
+{% block content %}
+<h2>채팅 관리</h2>
+<p><a href="{{ url_for('admin_dashboard') }}">관리자 대시보드로</a></p>
+<p><a href="{{ url_for('admin_broadcast_chat') }}">전체 채팅(그룹 채팅) 로그 보기 ({{ broadcast_count }}건)</a></p>
+
+<h3>1:1 대화방 목록</h3>
+<table style="width: 100%; border-collapse: collapse;">
+  <tr style="text-align: left; border-bottom: 1px solid #e0e0e0;">
+    <th>참여자</th>
+    <th>메시지 수</th>
+    <th>마지막 대화 시각</th>
+    <th></th>
+  </tr>
+  {% for c in conversations %}
+  <tr style="border-bottom: 1px solid #e0e0e0;">
+    <td>{{ c.user_a_name }}(@{{ c.user_a_id }}) / {{ c.user_b_name }}(@{{ c.user_b_id }})</td>
+    <td>{{ c.message_count }}</td>
+    <td>{{ c.last_message_at or '-' }}</td>
+    <td><a href="{{ url_for('admin_chat_detail', conversation_id=c.id) }}">대화 보기</a></td>
+  </tr>
+  {% else %}
+  <tr><td colspan="4">생성된 대화방이 없습니다.</td></tr>
+  {% endfor %}
+</table>
+{% endblock %}
