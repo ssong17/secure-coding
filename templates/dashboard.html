@@ -10,7 +10,7 @@
       <img src="{{ url_for('static', filename='uploads/' + product.image) }}" alt="" style="width: 48px; height: 48px; object-fit: cover; border-radius: 4px; vertical-align: middle; margin-right: 8px;">
       {% endif %}
       <a href="{{ url_for('view_product', product_id=product.id) }}">{{ product.title }}</a>
-      - 가격: {{ product.price }}
+      - 가격: {{ product.price }}{% if product.is_hidden %} [숨김]{% endif %}
     </li>
   {% endfor %}
 </ul>
@@ -39,7 +39,7 @@
     var input = document.getElementById('chat_input');
     var message = input.value;
     if (message) {
-      socket.emit('send_message', { 'username': "{{ user.username }}(@{{ user.id }})", 'message': message });
+      socket.emit('send_message', { 'message': message });
       input.value = "";
     }
   }

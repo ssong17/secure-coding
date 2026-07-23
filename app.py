@@ -55,6 +55,16 @@ def close_connection(exception):
     if db is not None:
         db.close()
 
+# 현재 로그인한 사용자가 관리자인지 DB 기준으로 확인 (일반 라우트에서 관리자 여부에 따라 동작을 분기할 때 사용)
+def current_user_is_admin():
+    if 'user_id' not in session:
+        return False
+    db = get_db()
+    cursor = db.cursor()
+    cursor.execute("SELECT is_admin FROM user WHERE id = ?", (session['user_id'],))
+    row = cursor.fetchone()
+    return bool(row and row['is_admin'])
+
 # 관리자 전용 라우트 보호 데코레이터 (세션이 아닌 DB의 is_admin을 기준으로 매번 검증)
 def admin_required(f):
     @wraps(f)
@@ -111,20 +121,34 @@ def init_db():
                 seller_id TEXT NOT NULL
             )
         """)
-        # 기존 DB에 image 컬럼이 없으면 추가 (마이그레이션)
+        # 기존 DB에 image/is_hidden 컬럼이 없으면 추가 (마이그레이션)
         cursor.execute("PRAGMA table_info(product)")
         product_columns = [row[1] for row in cursor.fetchall()]
         if 'image' not in product_columns:
             cursor.execute("ALTER TABLE product ADD COLUMN image TEXT")
+        if 'is_hidden' not in product_columns:
+            cursor.execute("ALTER TABLE product ADD COLUMN is_hidden INTEGER NOT NULL DEFAULT 0")
         # 신고 테이블 생성
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS report (
                 id TEXT PRIMARY KEY,
                 reporter_id TEXT NOT NULL,
+                target_type TEXT NOT NULL DEFAULT 'user',
                 target_id TEXT NOT NULL,
-                reason TEXT NOT NULL
+                reason TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'pending',
+                created_at TEXT NOT NULL DEFAULT ''
             )
         """)
+        # 기존 DB에 target_type/status/created_at 컬럼이 없으면 추가 (마이그레이션)
+        cursor.execute("PRAGMA table_info(report)")
+        report_columns = [row[1] for row in cursor.fetchall()]
+        if 'target_type' not in report_columns:
+            cursor.execute("ALTER TABLE report ADD COLUMN target_type TEXT NOT NULL DEFAULT 'user'")
+        if 'status' not in report_columns:
+            cursor.execute("ALTER TABLE report ADD COLUMN status TEXT NOT NULL DEFAULT 'pending'")
+        if 'created_at' not in report_columns:
+            cursor.execute("ALTER TABLE report ADD COLUMN created_at TEXT NOT NULL DEFAULT ''")
         # 1:1 대화방 테이블 생성 (참여자 두 명을 정렬된 순서로 저장해 중복 생성 방지)
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS conversation (
@@ -139,6 +163,15 @@ def init_db():
             CREATE TABLE IF NOT EXISTS message (
                 id TEXT PRIMARY KEY,
                 conversation_id TEXT NOT NULL,
+                sender_id TEXT NOT NULL,
+                content TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            )
+        """)
+        # 전체 채팅(그룹 채팅) 메시지 테이블 생성 (관리자 모니터링용으로 서버에 보존)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS broadcast_message (
+                id TEXT PRIMARY KEY,
                 sender_id TEXT NOT NULL,
                 content TEXT NOT NULL,
                 created_at TEXT NOT NULL
@@ -238,8 +271,11 @@ def dashboard():
     # 현재 사용자 조회
     cursor.execute("SELECT * FROM user WHERE id = ?", (session['user_id'],))
     current_user = cursor.fetchone()
-    # 모든 상품 조회
-    cursor.execute("SELECT * FROM product")
+    # 상품 조회: 관리자는 숨김 상품까지 모두, 일반 사용자는 숨겨지지 않은 상품만
+    if current_user['is_admin']:
+        cursor.execute("SELECT * FROM product")
+    else:
+        cursor.execute("SELECT * FROM product WHERE is_hidden = 0")
     all_products = cursor.fetchall()
     return render_template('dashboard.html', products=all_products, user=current_user)
 
@@ -469,7 +505,7 @@ def edit_product(product_id):
 
     return render_template('edit_product.html', product=product)
 
-# 상품 삭제 (판매자 본인만 가능)
+# 상품 삭제 (판매자 본인 또는 관리자만 가능)
 @app.route('/product/<product_id>/delete', methods=['POST'])
 def delete_product(product_id):
     if 'user_id' not in session:
@@ -481,7 +517,7 @@ def delete_product(product_id):
     if not product:
         flash('상품을 찾을 수 없습니다.')
         return redirect(url_for('dashboard'))
-    if product['seller_id'] != session['user_id']:
+    if product['seller_id'] != session['user_id'] and not current_user_is_admin():
         flash('본인이 등록한 상품만 삭제할 수 있습니다.')
         return redirect(url_for('view_product', product_id=product_id))
     delete_product_image(product['image'])
@@ -490,7 +526,24 @@ def delete_product(product_id):
     flash('상품이 삭제되었습니다.')
     return redirect(url_for('dashboard'))
 
-# 상품 상세보기
+# 관리자: 상품 숨기기/숨김 해제 (신고된 상품 차단 용도로도 사용)
+@app.route('/admin/products/<product_id>/toggle-hide', methods=['POST'])
+@admin_required
+def admin_toggle_hide_product(product_id):
+    db = get_db()
+    cursor = db.cursor()
+    cursor.execute("SELECT * FROM product WHERE id = ?", (product_id,))
+    product = cursor.fetchone()
+    if not product:
+        flash('상품을 찾을 수 없습니다.')
+        return redirect(url_for('dashboard'))
+    new_status = 0 if product['is_hidden'] else 1
+    cursor.execute("UPDATE product SET is_hidden = ? WHERE id = ?", (new_status, product_id))
+    db.commit()
+    flash('상품이 숨김 처리되었습니다.' if new_status else '숨김이 해제되었습니다.')
+    return redirect(url_for('view_product', product_id=product_id))
+
+# 상품 상세보기 (숨김 처리된 상품은 판매자 본인과 관리자만 볼 수 있음)
 @app.route('/product/<product_id>')
 def view_product(product_id):
     db = get_db()
@@ -500,30 +553,85 @@ def view_product(product_id):
     if not product:
         flash('상품을 찾을 수 없습니다.')
         return redirect(url_for('dashboard'))
+    is_owner = 'user_id' in session and product['seller_id'] == session['user_id']
+    is_admin = current_user_is_admin()
+    if product['is_hidden'] and not is_owner and not is_admin:
+        flash('상품을 찾을 수 없습니다.')
+        return redirect(url_for('dashboard'))
     # 판매자 정보 조회
     cursor.execute("SELECT * FROM user WHERE id = ?", (product['seller_id'],))
     seller = cursor.fetchone()
-    return render_template('view_product.html', product=product, seller=seller)
+    return render_template('view_product.html', product=product, seller=seller, is_admin=is_admin)
 
-# 신고하기
+# 신고하기 (사용자/상품 상세 페이지의 "신고하기" 링크로 대상 유형·id가 미리 채워져서 들어올 수 있음)
 @app.route('/report', methods=['GET', 'POST'])
 def report():
     if 'user_id' not in session:
         return redirect(url_for('login'))
+    db = get_db()
+    cursor = db.cursor()
     if request.method == 'POST':
-        target_id = request.form['target_id']
-        reason = request.form['reason']
-        db = get_db()
-        cursor = db.cursor()
+        target_type = request.form.get('target_type')
+        target_id = request.form.get('target_id', '').strip()
+        reason = request.form.get('reason', '').strip()
+
+        if target_type == 'user':
+            cursor.execute("SELECT 1 FROM user WHERE id = ?", (target_id,))
+        elif target_type == 'product':
+            cursor.execute("SELECT 1 FROM product WHERE id = ?", (target_id,))
+        else:
+            flash('신고 대상 유형이 올바르지 않습니다.')
+            return redirect(url_for('report'))
+
+        if cursor.fetchone() is None:
+            flash('신고 대상을 찾을 수 없습니다.')
+            return redirect(url_for('report'))
+
         report_id = str(uuid.uuid4())
+        created_at = datetime.datetime.utcnow().isoformat()
         cursor.execute(
-            "INSERT INTO report (id, reporter_id, target_id, reason) VALUES (?, ?, ?, ?)",
-            (report_id, session['user_id'], target_id, reason)
+            "INSERT INTO report (id, reporter_id, target_type, target_id, reason, status, created_at) "
+            "VALUES (?, ?, ?, ?, ?, 'pending', ?)",
+            (report_id, session['user_id'], target_type, target_id, reason, created_at)
         )
         db.commit()
         flash('신고가 접수되었습니다.')
         return redirect(url_for('dashboard'))
-    return render_template('report.html')
+
+    target_type = request.args.get('target_type', 'user')
+    target_id = request.args.get('target_id', '')
+    return render_template('report.html', target_type=target_type, target_id=target_id)
+
+# 관리자: 신고 내역 조회 (신고자/대상/사유/처리상태)
+@app.route('/admin/reports')
+@admin_required
+def admin_reports():
+    db = get_db()
+    cursor = db.cursor()
+    cursor.execute("""
+        SELECT r.*, u.username AS reporter_name
+        FROM report r JOIN user u ON r.reporter_id = u.id
+        ORDER BY r.created_at DESC
+    """)
+    reports = cursor.fetchall()
+    return render_template('admin/reports.html', reports=reports)
+
+# 관리자: 신고 처리 상태 토글 (대기 <-> 처리완료)
+@app.route('/admin/reports/<report_id>/toggle-status', methods=['POST'])
+@admin_required
+def admin_toggle_report_status(report_id):
+    db = get_db()
+    cursor = db.cursor()
+    cursor.execute("SELECT * FROM report WHERE id = ?", (report_id,))
+    target_report = cursor.fetchone()
+    if not target_report:
+        flash('신고 내역을 찾을 수 없습니다.')
+        return redirect(url_for('admin_reports'))
+    new_status = 'resolved' if target_report['status'] == 'pending' else 'pending'
+    cursor.execute("UPDATE report SET status = ? WHERE id = ?", (new_status, report_id))
+    db.commit()
+    flash('처리 상태가 변경되었습니다.')
+    return redirect(url_for('admin_reports'))
 
 # 관리자 대시보드: 전체 현황 요약
 @app.route('/admin')
@@ -542,11 +650,97 @@ def admin_dashboard():
         user_count=user_count, product_count=product_count, report_count=report_count
     )
 
-# 실시간 채팅: 클라이언트가 메시지를 보내면 전체 브로드캐스트
+# 관리자: 1:1 대화방 목록 (참여자, 메시지 수, 마지막 대화 시각)
+@app.route('/admin/chats')
+@admin_required
+def admin_chats():
+    db = get_db()
+    cursor = db.cursor()
+    cursor.execute("""
+        SELECT c.id, c.user_a_id, c.user_b_id,
+               ua.username AS user_a_name, ub.username AS user_b_name,
+               COUNT(m.id) AS message_count,
+               MAX(m.created_at) AS last_message_at
+        FROM conversation c
+        JOIN user ua ON c.user_a_id = ua.id
+        JOIN user ub ON c.user_b_id = ub.id
+        LEFT JOIN message m ON m.conversation_id = c.id
+        GROUP BY c.id
+        ORDER BY last_message_at DESC
+    """)
+    conversations = cursor.fetchall()
+    cursor.execute("SELECT COUNT(*) AS c FROM broadcast_message")
+    broadcast_count = cursor.fetchone()['c']
+    return render_template('admin/chats.html', conversations=conversations, broadcast_count=broadcast_count)
+
+# 관리자: 특정 1:1 대화방의 전체 메시지 열람 (모니터링용, 읽기 전용)
+@app.route('/admin/chats/<conversation_id>')
+@admin_required
+def admin_chat_detail(conversation_id):
+    db = get_db()
+    cursor = db.cursor()
+    cursor.execute("""
+        SELECT c.*, ua.username AS user_a_name, ub.username AS user_b_name
+        FROM conversation c
+        JOIN user ua ON c.user_a_id = ua.id
+        JOIN user ub ON c.user_b_id = ub.id
+        WHERE c.id = ?
+    """, (conversation_id,))
+    conv = cursor.fetchone()
+    if not conv:
+        flash('대화방을 찾을 수 없습니다.')
+        return redirect(url_for('admin_chats'))
+    cursor.execute("""
+        SELECT m.*, u.username AS sender_name
+        FROM message m JOIN user u ON m.sender_id = u.id
+        WHERE m.conversation_id = ?
+        ORDER BY m.created_at
+    """, (conversation_id,))
+    messages = cursor.fetchall()
+    return render_template('admin/chat_detail.html', conv=conv, messages=messages)
+
+# 관리자: 전체 채팅(그룹 채팅) 로그 열람 (최근 200건, 읽기 전용)
+@app.route('/admin/chats/broadcast')
+@admin_required
+def admin_broadcast_chat():
+    db = get_db()
+    cursor = db.cursor()
+    cursor.execute("""
+        SELECT b.*, u.username AS sender_name
+        FROM broadcast_message b JOIN user u ON b.sender_id = u.id
+        ORDER BY b.created_at DESC
+        LIMIT 200
+    """)
+    messages = cursor.fetchall()
+    return render_template('admin/broadcast_chat.html', messages=messages)
+
+# 실시간 채팅: 클라이언트가 메시지를 보내면 전체 브로드캐스트하고 관리자 모니터링을 위해 DB에 보존
+# (발신자 표시는 클라이언트가 보낸 값을 쓰지 않고 세션 기준으로 서버가 직접 구성 - 사용자명 위조 방지)
 @socketio.on('send_message')
 def handle_send_message_event(data):
-    data['message_id'] = str(uuid.uuid4())
-    send(data, broadcast=True)
+    if 'user_id' not in session:
+        return
+    content = (data.get('message') or '').strip()
+    if not content:
+        return
+    db = get_db()
+    cursor = db.cursor()
+    cursor.execute("SELECT username FROM user WHERE id = ?", (session['user_id'],))
+    sender = cursor.fetchone()
+    if not sender:
+        return
+    message_id = str(uuid.uuid4())
+    created_at = datetime.datetime.utcnow().isoformat()
+    cursor.execute(
+        "INSERT INTO broadcast_message (id, sender_id, content, created_at) VALUES (?, ?, ?, ?)",
+        (message_id, session['user_id'], content, created_at)
+    )
+    db.commit()
+    send({
+        'message_id': message_id,
+        'username': f"{sender['username']}(@{session['user_id']})",
+        'message': content
+    }, broadcast=True)
 
 # 대화방 참여자인지 DB 기준으로 확인 (클라이언트가 임의의 room에 join하는 것 방지)
 def is_conversation_participant(conversation_id, user_id):

@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% block title %}상품 상세보기{% endblock %}
 {% block content %}
-<h2>{{ product.title }}</h2>
+<h2>{{ product.title }}{% if product.is_hidden %} [숨김]{% endif %}</h2>
 {% if product.image %}
 <img src="{{ url_for('static', filename='uploads/' + product.image) }}" alt="{{ product.title }}" style="max-width: 100%; border-radius: 4px;">
 {% endif %}
@@ -9,13 +9,28 @@
 <p>가격: {{ product.price }}</p>
 <p>판매자: {{ (seller.username ~ '(@' ~ seller.id ~ ')') if seller else '알 수 없음' }}</p>
 {% if seller and seller.id != session.get('user_id') %}
-<p><a href="{{ url_for('chat', peer_id=seller.id) }}">문의하기</a></p>
+<p>
+  <a href="{{ url_for('chat', peer_id=seller.id) }}">문의하기</a>
+  <a href="{{ url_for('report', target_type='product', target_id=product.id) }}">신고하기</a>
+</p>
 {% endif %}
 {% if seller and seller.id == session.get('user_id') %}
 <p>
   <a href="{{ url_for('edit_product', product_id=product.id) }}">수정</a>
   <form method="post" action="{{ url_for('delete_product', product_id=product.id) }}" style="display: inline;" onsubmit="return confirm('정말 삭제하시겠습니까?');">
     <button type="submit" style="width: auto;">삭제</button>
+  </form>
+</p>
+{% endif %}
+{% if is_admin and (not seller or seller.id != session.get('user_id')) %}
+<hr>
+<h3>관리자 메뉴</h3>
+<p>
+  <form method="post" action="{{ url_for('admin_toggle_hide_product', product_id=product.id) }}" style="display: inline;">
+    <button type="submit" style="width: auto;">{{ '숨김 해제' if product.is_hidden else '숨기기' }}</button>
+  </form>
+  <form method="post" action="{{ url_for('delete_product', product_id=product.id) }}" style="display: inline;" onsubmit="return confirm('관리자 권한으로 이 상품을 삭제하시겠습니까?');">
+    <button type="submit" style="width: auto;">삭제(관리자)</button>
   </form>
 </p>
 {% endif %}
