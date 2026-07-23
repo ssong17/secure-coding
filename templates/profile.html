@@ -4,6 +4,7 @@
 <h2>프로필 관리</h2>
 <p>아이디: {{ user.id }}</p>
 <form method="post">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
   사용자이름: <input type="text" name="username" value="{{ user.username }}" required><br>
   소개글: <br>
   <textarea name="bio" rows="4" cols="50">{{ user.bio or '' }}</textarea><br>
@@ -12,6 +13,7 @@
 
 <h2>비밀번호 변경</h2>
 <form method="post" action="{{ url_for('update_password') }}">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
   현재 비밀번호: <input type="password" name="current_password" required><br>
   새 비밀번호: <input type="password" name="new_password" required><br>
   새 비밀번호 확인: <input type="password" name="confirm_password" required><br>
@@ -21,11 +23,13 @@
 <h2>잔액</h2>
 <p>현재 잔액: {{ '{:,}'.format(user.balance) }}원</p>
 <form method="post" action="{{ url_for('charge_balance') }}">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
   충전 금액: <input type="number" name="amount" min="1" required><br>
   <button type="submit">충전하기</button>
 </form>
 <p style="color: #888;">1일 최대 {{ '{:,}'.format(daily_charge_limit) }}원, 1개월 최대 {{ '{:,}'.format(monthly_charge_limit) }}원까지 충전할 수 있습니다.</p>
 <form method="post" action="{{ url_for('withdraw_balance') }}">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
   출금 금액: <input type="number" name="amount" min="1" required><br>
   <button type="submit">출금하기</button>
 </form>

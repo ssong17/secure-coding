@@ -3,6 +3,7 @@
 {% block content %}
 <h2>신고하기</h2>
 <form method="post">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
   신고 대상 유형:
   <select name="target_type">
     <option value="user" {% if target_type == 'user' %}selected{% endif %}>사용자</option>

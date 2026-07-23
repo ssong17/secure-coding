@@ -3,6 +3,7 @@
 {% block content %}
 <h2>회원가입</h2>
 <form method="post">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
   아이디: <input type="text" name="id" required><br>
   사용자이름: <input type="text" name="username" required><br>
   비밀번호: <input type="password" name="password" required><br>

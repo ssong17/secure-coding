@@ -33,12 +33,15 @@
     <td>{{ r.created_at | fmt_datetime }}</td>
     <td>
       <form method="post" action="{{ url_for('admin_accept_report', report_id=r.id) }}" style="display: inline;">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
         <button type="submit" style="width: auto;">수락</button>
       </form>
       <form method="post" action="{{ url_for('admin_reject_report', report_id=r.id) }}" style="display: inline;">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
         <button type="submit" style="width: auto;">거절</button>
       </form>
-      <form method="post" action="{{ url_for('admin_delete_report', report_id=r.id) }}" style="display: inline;" onsubmit="return confirm('이 신고 내역을 삭제하시겠습니까?');">
+      <form method="post" action="{{ url_for('admin_delete_report', report_id=r.id) }}" style="display: inline;" data-confirm="이 신고 내역을 삭제하시겠습니까?">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
         <button type="submit" style="width: auto;">삭제</button>
       </form>
     </td>

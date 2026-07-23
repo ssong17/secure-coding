@@ -1,16 +1,53 @@
 import os
+import secrets
 import sqlite3
 import uuid
 import datetime
 from functools import wraps
 from flask import Flask, render_template, request, redirect, url_for, session, flash, g
 from flask_socketio import SocketIO, send, join_room, emit
+from flask_wtf import CSRFProtect
 from werkzeug.utils import secure_filename
+from werkzeug.security import generate_password_hash, check_password_hash
 
 app = Flask(__name__)
-app.config['SECRET_KEY'] = 'secret!'
+
+# SECRET_KEY는 환경변수로 주입한다. 미설정 시에는 하드코딩된 고정 값 대신 매 기동마다 새
+# 무작위 키를 사용해, 최소한 "알려진 고정 키"로 세션/CSRF 토큰이 위조되는 것은 막는다.
+# (단, 이 경우 서버 재시작 시 기존 세션은 모두 무효화된다 - 운영 환경에서는 SECRET_KEY를 반드시 설정할 것)
+app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY') or secrets.token_hex(32)
+if not os.environ.get('SECRET_KEY'):
+    print('[경고] SECRET_KEY 환경변수가 설정되지 않아 임시 키로 실행합니다. 재시작하면 기존 세션이 모두 끊깁니다.')
+
+# 세션 쿠키 보안 옵션: JS에서 접근 불가(HTTPONLY), 크로스사이트 요청에는 기본적으로 실어 보내지 않음(SAMESITE)
+app.config['SESSION_COOKIE_HTTPONLY'] = True
+app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'
+# HTTPS 배포 환경에서는 SESSION_COOKIE_SECURE=1 환경변수로 켤 것 (로컬 HTTP 개발 환경에서는 켜면 쿠키가 전송되지 않음)
+app.config['SESSION_COOKIE_SECURE'] = os.environ.get('SESSION_COOKIE_SECURE', '0') == '1'
+
 DATABASE = 'market.db'
 socketio = SocketIO(app)
+csrf = CSRFProtect(app)
+
+@app.after_request
+def set_security_headers(response):
+    # 인라인 스크립트를 전부 static/js로 분리했기 때문에 script-src에서 'unsafe-inline'을 뺄 수 있었다.
+    # style-src는 기존 템플릿 곳곳의 style="" 인라인 속성을 전부 클래스로 옮기는 대규모 리팩터링까지는
+    # 이번 범위에 포함하지 않아 'unsafe-inline'을 유지한다(알려진 완화 사항으로 문서화).
+    response.headers['Content-Security-Policy'] = (
+        "default-src 'self'; "
+        "script-src 'self' https://cdnjs.cloudflare.com; "
+        "style-src 'self' 'unsafe-inline'; "
+        "img-src 'self' data:; "
+        "connect-src 'self' ws: wss:; "
+        "frame-ancestors 'none'; "
+        "base-uri 'self'; "
+        "form-action 'self'"
+    )
+    response.headers['X-Content-Type-Options'] = 'nosniff'
+    response.headers['X-Frame-Options'] = 'DENY'
+    response.headers['Referrer-Policy'] = 'strict-origin-when-cross-origin'
+    return response
 
 # isoformat 시각 문자열(예: 2026-07-23T06:04:01.180464)을 "2026-07-23 06:04:01" 형태로 표시
 @app.template_filter('fmt_datetime')
@@ -192,7 +229,7 @@ def init_db():
         if cursor.fetchone() is None:
             cursor.execute(
                 "INSERT OR IGNORE INTO user (id, username, password, is_admin) VALUES (?, ?, ?, 1)",
-                ('admin', '관리자', 'admin1234')
+                ('admin', '관리자', generate_password_hash('admin1234'))
             )
         # 상품 테이블 생성
         cursor.execute("""
@@ -351,7 +388,7 @@ def register():
             flash('이미 존재하는 사용자이름입니다.')
             return redirect(url_for('register'))
         cursor.execute("INSERT INTO user (id, username, password) VALUES (?, ?, ?)",
-                       (user_id, username, password))
+                       (user_id, username, generate_password_hash(password)))
         db.commit()
         flash('회원가입이 완료되었습니다. 로그인 해주세요.')
         return redirect(url_for('login'))
@@ -365,8 +402,10 @@ def login():
         password = request.form['password']
         db = get_db()
         cursor = db.cursor()
-        cursor.execute("SELECT * FROM user WHERE id = ? AND password = ?", (user_id, password))
+        cursor.execute("SELECT * FROM user WHERE id = ?", (user_id,))
         user = cursor.fetchone()
+        if user and not check_password_hash(user['password'], password):
+            user = None
         if user:
             if user['is_suspended']:
                 flash('정지 처리된 계정입니다. 관리자에게 문의해주세요.')
@@ -487,7 +526,7 @@ def update_password():
     cursor = db.cursor()
     cursor.execute("SELECT * FROM user WHERE id = ?", (session['user_id'],))
     current_user = cursor.fetchone()
-    if current_user['password'] != current_password:
+    if not check_password_hash(current_user['password'], current_password):
         flash('현재 비밀번호가 일치하지 않습니다.')
         return redirect(url_for('profile'))
     if not new_password:
@@ -496,7 +535,7 @@ def update_password():
     if new_password != confirm_password:
         flash('새 비밀번호가 일치하지 않습니다.')
         return redirect(url_for('profile'))
-    cursor.execute("UPDATE user SET password = ? WHERE id = ?", (new_password, session['user_id']))
+    cursor.execute("UPDATE user SET password = ? WHERE id = ?", (generate_password_hash(new_password), session['user_id']))
     db.commit()
     flash('비밀번호가 변경되었습니다.')
     return redirect(url_for('profile'))
@@ -1282,4 +1321,7 @@ def handle_send_direct_message(data):
 
 if __name__ == '__main__':
     init_db()  # 앱 컨텍스트 내에서 테이블 생성
-    socketio.run(app, debug=True)
+    # 디버그 모드는 Werkzeug 인터랙티브 디버거(임의 코드 실행 가능)를 켜므로 기본값은 꺼둔다.
+    # 로컬에서 디버그가 필요하면 FLASK_DEBUG=1 로 명시적으로 켤 것.
+    debug_mode = os.environ.get('FLASK_DEBUG', '0') == '1'
+    socketio.run(app, debug=debug_mode)

@@ -5,6 +5,7 @@ dependencies:
   - python=3.9
   - pip
   - pip:
-    - flask 
+    - flask
     - flask-socketio
     - flask-sqlalchemy
+    - flask-wtf

@@ -18,7 +18,8 @@
 {% elif product.is_hidden %}
 <p>현재 구매할 수 없는 상품입니다.</p>
 {% else %}
-<form method="post" action="{{ url_for('buy_product', product_id=product.id) }}" onsubmit="return confirm('{{ product.price }}원을 결제하고 구매하시겠습니까?');">
+<form method="post" action="{{ url_for('buy_product', product_id=product.id) }}" data-confirm="{{ product.price }}원을 결제하고 구매하시겠습니까?">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
   <button type="submit">구매하기</button>
 </form>
 {% endif %}
@@ -26,7 +27,8 @@
 {% if seller and seller.id == session.get('user_id') %}
 <p>
   <a href="{{ url_for('edit_product', product_id=product.id) }}">수정</a>
-  <form method="post" action="{{ url_for('delete_product', product_id=product.id) }}" style="display: inline;" onsubmit="return confirm('정말 삭제하시겠습니까?');">
+  <form method="post" action="{{ url_for('delete_product', product_id=product.id) }}" style="display: inline;" data-confirm="정말 삭제하시겠습니까?">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
     <button type="submit" style="width: auto;">삭제</button>
   </form>
 </p>
@@ -36,9 +38,11 @@
 <h3>관리자 메뉴</h3>
 <p>
   <form method="post" action="{{ url_for('admin_toggle_hide_product', product_id=product.id) }}" style="display: inline;">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
     <button type="submit" style="width: auto;">{{ '숨김 해제' if product.is_hidden else '숨기기' }}</button>
   </form>
-  <form method="post" action="{{ url_for('delete_product', product_id=product.id) }}" style="display: inline;" onsubmit="return confirm('관리자 권한으로 이 상품을 삭제하시겠습니까?');">
+  <form method="post" action="{{ url_for('delete_product', product_id=product.id) }}" style="display: inline;" data-confirm="관리자 권한으로 이 상품을 삭제하시겠습니까?">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
     <button type="submit" style="width: auto;">삭제</button>
   </form>
 </p>

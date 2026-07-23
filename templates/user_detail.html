@@ -19,14 +19,17 @@
 <p>
   {% if user.is_suspended %}
   <form method="post" action="{{ url_for('admin_unsuspend_user', user_id=user.id) }}" style="display: inline;">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
     <button type="submit" style="width: auto;">정지 해제</button>
   </form>
   {% elif report_count is not none and report_count >= auto_suspend_threshold %}
   <form method="post" action="{{ url_for('admin_suspend_user', user_id=user.id) }}" style="display: inline;">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
     <button type="submit" style="width: auto;">정지 전환</button>
   </form>
   {% endif %}
-  <form method="post" action="{{ url_for('admin_delete_user', user_id=user.id) }}" style="display: inline;" onsubmit="return confirm('정말 이 사용자를 강제 탈퇴시키겠습니까? 등록된 상품도 함께 삭제됩니다.');">
+  <form method="post" action="{{ url_for('admin_delete_user', user_id=user.id) }}" style="display: inline;" data-confirm="정말 이 사용자를 강제 탈퇴시키겠습니까? 등록된 상품도 함께 삭제됩니다.">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
     <button type="submit" style="width: auto;">강제 탈퇴</button>
   </form>
 </p>
