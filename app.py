@@ -138,16 +138,19 @@ def init_db():
                 password TEXT NOT NULL,
                 bio TEXT,
                 is_admin INTEGER NOT NULL DEFAULT 0,
-                is_suspended INTEGER NOT NULL DEFAULT 0
+                is_suspended INTEGER NOT NULL DEFAULT 0,
+                balance INTEGER NOT NULL DEFAULT 0
             )
         """)
-        # 기존 DB에 is_admin/is_suspended 컬럼이 없으면 추가 (마이그레이션)
+        # 기존 DB에 is_admin/is_suspended/balance 컬럼이 없으면 추가 (마이그레이션)
         cursor.execute("PRAGMA table_info(user)")
         user_columns = [row[1] for row in cursor.fetchall()]
         if 'is_admin' not in user_columns:
             cursor.execute("ALTER TABLE user ADD COLUMN is_admin INTEGER NOT NULL DEFAULT 0")
         if 'is_suspended' not in user_columns:
             cursor.execute("ALTER TABLE user ADD COLUMN is_suspended INTEGER NOT NULL DEFAULT 0")
+        if 'balance' not in user_columns:
+            cursor.execute("ALTER TABLE user ADD COLUMN balance INTEGER NOT NULL DEFAULT 0")
         # 관리자 계정이 하나도 없으면 기본 관리자 계정 시드 생성
         cursor.execute("SELECT 1 FROM user WHERE is_admin = 1")
         if cursor.fetchone() is None:
@@ -165,13 +168,15 @@ def init_db():
                 seller_id TEXT NOT NULL
             )
         """)
-        # 기존 DB에 image/is_hidden 컬럼이 없으면 추가 (마이그레이션)
+        # 기존 DB에 image/is_hidden/is_sold 컬럼이 없으면 추가 (마이그레이션)
         cursor.execute("PRAGMA table_info(product)")
         product_columns = [row[1] for row in cursor.fetchall()]
         if 'image' not in product_columns:
             cursor.execute("ALTER TABLE product ADD COLUMN image TEXT")
         if 'is_hidden' not in product_columns:
             cursor.execute("ALTER TABLE product ADD COLUMN is_hidden INTEGER NOT NULL DEFAULT 0")
+        if 'is_sold' not in product_columns:
+            cursor.execute("ALTER TABLE product ADD COLUMN is_sold INTEGER NOT NULL DEFAULT 0")
         # 신고 테이블 생성
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS report (
@@ -199,9 +204,15 @@ def init_db():
                 id TEXT PRIMARY KEY,
                 user_a_id TEXT NOT NULL,
                 user_b_id TEXT NOT NULL,
+                product_id TEXT,
                 UNIQUE(user_a_id, user_b_id)
             )
         """)
+        # 기존 DB에 product_id 컬럼이 없으면 추가 (마이그레이션)
+        cursor.execute("PRAGMA table_info(conversation)")
+        conversation_columns = [row[1] for row in cursor.fetchall()]
+        if 'product_id' not in conversation_columns:
+            cursor.execute("ALTER TABLE conversation ADD COLUMN product_id TEXT")
         # 1:1 채팅 메시지 테이블 생성
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS message (
@@ -218,6 +229,31 @@ def init_db():
                 id TEXT PRIMARY KEY,
                 sender_id TEXT NOT NULL,
                 content TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            )
+        """)
+        # 송금 내역 테이블 생성
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS transfer (
+                id TEXT PRIMARY KEY,
+                sender_id TEXT NOT NULL,
+                receiver_id TEXT NOT NULL,
+                amount INTEGER NOT NULL,
+                product_id TEXT,
+                created_at TEXT NOT NULL
+            )
+        """)
+        # 기존 DB에 product_id 컬럼이 없으면 추가 (마이그레이션)
+        cursor.execute("PRAGMA table_info(transfer)")
+        transfer_columns = [row[1] for row in cursor.fetchall()]
+        if 'product_id' not in transfer_columns:
+            cursor.execute("ALTER TABLE transfer ADD COLUMN product_id TEXT")
+        # 잔액 충전 내역 테이블 생성 (일일/월간 충전 한도 계산용)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS charge_log (
+                id TEXT PRIMARY KEY,
+                user_id TEXT NOT NULL,
+                amount INTEGER NOT NULL,
                 created_at TEXT NOT NULL
             )
         """)
@@ -367,7 +403,10 @@ def profile():
         return redirect(url_for('profile'))
     cursor.execute("SELECT * FROM user WHERE id = ?", (session['user_id'],))
     current_user = cursor.fetchone()
-    return render_template('profile.html', user=current_user)
+    return render_template(
+        'profile.html', user=current_user,
+        daily_charge_limit=DAILY_CHARGE_LIMIT, monthly_charge_limit=MONTHLY_CHARGE_LIMIT
+    )
 
 # 마이페이지: 비밀번호 변경
 @app.route('/profile/password', methods=['POST'])
@@ -393,6 +432,55 @@ def update_password():
     cursor.execute("UPDATE user SET password = ? WHERE id = ?", (new_password, session['user_id']))
     db.commit()
     flash('비밀번호가 변경되었습니다.')
+    return redirect(url_for('profile'))
+
+DAILY_CHARGE_LIMIT = 500000     # 1일 충전 한도
+MONTHLY_CHARGE_LIMIT = 3000000  # 1개월 충전 한도
+
+# 마이페이지: 잔액 충전 (실제 결제 연동 없이 가상으로 잔액에 바로 반영, 일일/월간 한도로 무한 충전 방지)
+@app.route('/profile/charge', methods=['POST'])
+def charge_balance():
+    if 'user_id' not in session:
+        return redirect(url_for('login'))
+    amount_raw = request.form.get('amount', '')
+    if not amount_raw.isdigit() or int(amount_raw) <= 0:
+        flash('충전 금액은 1 이상의 정수로 입력해주세요.')
+        return redirect(url_for('profile'))
+    amount = int(amount_raw)
+
+    db = get_db()
+    cursor = db.cursor()
+    now_dt = datetime.datetime.utcnow()
+    today_prefix = now_dt.strftime('%Y-%m-%d')
+    month_prefix = now_dt.strftime('%Y-%m')
+
+    cursor.execute(
+        "SELECT COALESCE(SUM(amount), 0) AS total FROM charge_log "
+        "WHERE user_id = ? AND substr(created_at, 1, 10) = ?",
+        (session['user_id'], today_prefix)
+    )
+    today_total = cursor.fetchone()['total']
+    cursor.execute(
+        "SELECT COALESCE(SUM(amount), 0) AS total FROM charge_log "
+        "WHERE user_id = ? AND substr(created_at, 1, 7) = ?",
+        (session['user_id'], month_prefix)
+    )
+    month_total = cursor.fetchone()['total']
+
+    if today_total + amount > DAILY_CHARGE_LIMIT:
+        flash(f'일일 충전 한도({DAILY_CHARGE_LIMIT:,}원)를 초과합니다. 오늘 남은 한도: {max(0, DAILY_CHARGE_LIMIT - today_total):,}원')
+        return redirect(url_for('profile'))
+    if month_total + amount > MONTHLY_CHARGE_LIMIT:
+        flash(f'월 충전 한도({MONTHLY_CHARGE_LIMIT:,}원)를 초과합니다. 이번 달 남은 한도: {max(0, MONTHLY_CHARGE_LIMIT - month_total):,}원')
+        return redirect(url_for('profile'))
+
+    cursor.execute(
+        "INSERT INTO charge_log (id, user_id, amount, created_at) VALUES (?, ?, ?, ?)",
+        (str(uuid.uuid4()), session['user_id'], amount, now_dt.isoformat())
+    )
+    cursor.execute("UPDATE user SET balance = balance + ? WHERE id = ?", (amount, session['user_id']))
+    db.commit()
+    flash(f'{amount:,}원이 충전되었습니다.')
     return redirect(url_for('profile'))
 
 # 사용자 조회: 아이디로 검색

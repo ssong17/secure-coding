@@ -10,7 +10,7 @@
       <img src="{{ url_for('static', filename='uploads/' + product.image) }}" alt="" style="width: 48px; height: 48px; object-fit: cover; border-radius: 4px; vertical-align: middle; margin-right: 8px;">
       {% endif %}
       <a href="{{ url_for('view_product', product_id=product.id) }}">{{ product.title }}</a>
-      - 가격: {{ product.price }}{% if product.is_hidden %} [숨김]{% endif %}
+      - 가격: {{ product.price }}{% if product.is_sold %} [판매완료]{% endif %}{% if product.is_hidden %} [숨김]{% endif %}
     </li>
   {% else %}
     <li>등록된 상품이 없습니다.</li>

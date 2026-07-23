@@ -2,6 +2,17 @@
 {% block title %}{{ peer.username }}님과의 채팅{% endblock %}
 {% block content %}
 <h2>{{ peer.username }}(@{{ peer.id }})님과의 채팅</h2>
+{% if linked_product %}
+  {% if linked_product.seller_id == my_id %}
+    <p>문의 상품: {{ linked_product.title }} ({{ linked_product.price }}원){% if linked_product.is_sold %} - 판매완료{% endif %}</p>
+  {% elif linked_product.is_sold %}
+    <p>문의 상품: {{ linked_product.title }} - 판매 완료된 상품입니다.</p>
+  {% else %}
+    <form method="post" action="{{ url_for('buy_product', product_id=linked_product.id) }}" onsubmit="return confirm('{{ linked_product.title }}을(를) {{ linked_product.price }}원에 구매하시겠습니까?');">
+      <button type="submit" style="width: auto;">{{ linked_product.title }} 구매하기 ({{ linked_product.price }}원)</button>
+    </form>
+  {% endif %}
+{% endif %}
 <div id="chat">
   <ul id="messages">
     {% for m in history %}
