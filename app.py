@@ -493,6 +493,64 @@ def charge_balance():
     flash(f'{amount:,}원이 충전되었습니다.')
     return redirect(url_for('profile'))
 
+# 마이페이지: 잔액 출금 (충전과 대칭되는 가상 출금, 실제 계좌 이체 연동은 범위 밖)
+@app.route('/profile/withdraw', methods=['POST'])
+def withdraw_balance():
+    if 'user_id' not in session:
+        return redirect(url_for('login'))
+    amount_raw = request.form.get('amount', '')
+    if not amount_raw.isdigit() or int(amount_raw) <= 0:
+        flash('출금 금액은 1 이상의 정수로 입력해주세요.')
+        return redirect(url_for('profile'))
+    amount = int(amount_raw)
+
+    db = get_db()
+    cursor = db.cursor()
+    # 잔액 확인과 차감을 하나의 조건부 UPDATE로 원자적으로 처리 (TOCTOU 경쟁 상태 방지)
+    cursor.execute(
+        "UPDATE user SET balance = balance - ? WHERE id = ? AND balance >= ?",
+        (amount, session['user_id'], amount)
+    )
+    if cursor.rowcount == 0:
+        db.rollback()
+        flash('잔액이 부족합니다.')
+        return redirect(url_for('profile'))
+
+    cursor.execute(
+        "INSERT INTO withdraw_log (id, user_id, amount, created_at) VALUES (?, ?, ?, ?)",
+        (str(uuid.uuid4()), session['user_id'], amount, datetime.datetime.utcnow().isoformat())
+    )
+    db.commit()
+    flash(f'{amount:,}원이 출금되었습니다.')
+    return redirect(url_for('profile'))
+
+# 마이페이지: 송금 내역 (보낸 내역 / 받은 내역)
+@app.route('/profile/transfers')
+def transfer_history():
+    if 'user_id' not in session:
+        return redirect(url_for('login'))
+    db = get_db()
+    cursor = db.cursor()
+    cursor.execute("""
+        SELECT t.*, u.username AS counterpart_name, p.title AS product_title
+        FROM transfer t
+        JOIN user u ON t.receiver_id = u.id
+        LEFT JOIN product p ON t.product_id = p.id
+        WHERE t.sender_id = ?
+        ORDER BY t.created_at DESC
+    """, (session['user_id'],))
+    sent = cursor.fetchall()
+    cursor.execute("""
+        SELECT t.*, u.username AS counterpart_name, p.title AS product_title
+        FROM transfer t
+        JOIN user u ON t.sender_id = u.id
+        LEFT JOIN product p ON t.product_id = p.id
+        WHERE t.receiver_id = ?
+        ORDER BY t.created_at DESC
+    """, (session['user_id'],))
+    received = cursor.fetchall()
+    return render_template('transfer_history.html', sent=sent, received=received)
+
 # 사용자 조회: 아이디로 검색
 @app.route('/users')
 def users():
@@ -529,8 +587,9 @@ def user_detail(user_id):
     if current_user_is_admin():
         report_count = count_accepted_reports_against_user(cursor, user_id)
     return render_template(
-        'user_detail.html', user=found_user,
-        report_count=report_count, auto_suspend_threshold=AUTO_SUSPEND_REPORT_THRESHOLD
+        'user_detail.html', user=found_user, report_count=report_count,
+        product_ban_threshold=PRODUCT_BAN_REPORT_THRESHOLD,
+        auto_suspend_threshold=AUTO_SUSPEND_REPORT_THRESHOLD
     )
 
 # 관리자: 회원 휴면 해제 (휴면 전환은 신고 누적에 따라 자동으로만 이뤄지고, 해제는 관리자가 수동으로 처리)

@@ -25,4 +25,9 @@
   <button type="submit">충전하기</button>
 </form>
 <p style="color: #888;">1일 최대 {{ '{:,}'.format(daily_charge_limit) }}원, 1개월 최대 {{ '{:,}'.format(monthly_charge_limit) }}원까지 충전할 수 있습니다.</p>
+<form method="post" action="{{ url_for('withdraw_balance') }}">
+  출금 금액: <input type="number" name="amount" min="1" required><br>
+  <button type="submit">출금하기</button>
+</form>
+<p><a href="{{ url_for('transfer_history') }}">송금 내역 보기</a></p>
 {% endblock %}

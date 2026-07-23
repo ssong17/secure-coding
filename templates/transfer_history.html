@@ -1,0 +1,30 @@
+{% extends "base.html" %}
+{% block title %}송금 내역{% endblock %}
+{% block content %}
+<h2>송금 내역</h2>
+<p><a href="{{ url_for('profile') }}">마이페이지로</a></p>
+
+<h3>보낸 내역</h3>
+<ul>
+  {% for t in sent %}
+    <li>
+      [{{ t.created_at | fmt_datetime }}] {{ t.counterpart_name }}(@{{ t.receiver_id }})님에게 {{ '{:,}'.format(t.amount) }}원
+      {% if t.product_title %} - {{ t.product_title }} 구매{% endif %}
+    </li>
+  {% else %}
+    <li>보낸 내역이 없습니다.</li>
+  {% endfor %}
+</ul>
+
+<h3>받은 내역</h3>
+<ul>
+  {% for t in received %}
+    <li>
+      [{{ t.created_at | fmt_datetime }}] {{ t.counterpart_name }}(@{{ t.sender_id }})님에게서 {{ '{:,}'.format(t.amount) }}원
+      {% if t.product_title %} - {{ t.product_title }} 판매{% endif %}
+    </li>
+  {% else %}
+    <li>받은 내역이 없습니다.</li>
+  {% endfor %}
+</ul>
+{% endblock %}
