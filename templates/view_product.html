@@ -5,4 +5,7 @@
 <p>{{ product.description }}</p>
 <p>가격: {{ product.price }}</p>
 <p>판매자: {{ (seller.username ~ '(@' ~ seller.id ~ ')') if seller else '알 수 없음' }}</p>
+{% if seller and seller.id != session.get('user_id') %}
+<p><a href="{{ url_for('chat', peer_id=seller.id) }}">문의하기</a></p>
+{% endif %}
 {% endblock %}

@@ -1,0 +1,46 @@
+{% extends "base.html" %}
+{% block title %}{{ peer.username }}님과의 채팅{% endblock %}
+{% block content %}
+<h2>{{ peer.username }}(@{{ peer.id }})님과의 채팅</h2>
+<div id="chat">
+  <ul id="messages">
+    {% for m in history %}
+      <li><strong>{{ m.sender_name }}(@{{ m.sender_id }})</strong>: {{ m.content }}</li>
+    {% endfor %}
+  </ul>
+  <input id="chat_input" type="text" placeholder="메시지를 입력하세요">
+  <button onclick="sendMessage()">전송</button>
+</div>
+
+<script type="text/javascript">
+  var conversationId = "{{ conversation_id }}";
+  var socket = io();
+
+  socket.on('connect', function() {
+    socket.emit('join_chat', { conversation_id: conversationId });
+  });
+
+  socket.on('receive_direct_message', function(data) {
+    var messages = document.getElementById('messages');
+    var item = document.createElement('li');
+    item.textContent = data.sender_name + "(@" + data.sender_id + "): " + data.message;
+    messages.appendChild(item);
+    window.scrollTo(0, document.body.scrollHeight);
+  });
+
+  function sendMessage() {
+    var input = document.getElementById('chat_input');
+    var message = input.value;
+    if (message) {
+      socket.emit('send_direct_message', { conversation_id: conversationId, message: message });
+      input.value = "";
+    }
+  }
+
+  document.getElementById('chat_input').addEventListener('keydown', function(e) {
+    if (e.key === 'Enter') {
+      sendMessage();
+    }
+  });
+</script>
+{% endblock %}

@@ -1,7 +1,8 @@
 import sqlite3
 import uuid
+import datetime
 from flask import Flask, render_template, request, redirect, url_for, session, flash, g
-from flask_socketio import SocketIO, send
+from flask_socketio import SocketIO, send, join_room, emit
 
 app = Flask(__name__)
 app.config['SECRET_KEY'] = 'secret!'
@@ -55,7 +56,44 @@ def init_db():
                 reason TEXT NOT NULL
             )
         """)
+        # 1:1 대화방 테이블 생성 (참여자 두 명을 정렬된 순서로 저장해 중복 생성 방지)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS conversation (
+                id TEXT PRIMARY KEY,
+                user_a_id TEXT NOT NULL,
+                user_b_id TEXT NOT NULL,
+                UNIQUE(user_a_id, user_b_id)
+            )
+        """)
+        # 1:1 채팅 메시지 테이블 생성
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS message (
+                id TEXT PRIMARY KEY,
+                conversation_id TEXT NOT NULL,
+                sender_id TEXT NOT NULL,
+                content TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            )
+        """)
         db.commit()
+
+# 두 사용자 간 대화방을 조회하고 없으면 새로 생성
+def get_or_create_conversation(db, user_a_id, user_b_id):
+    cursor = db.cursor()
+    p1, p2 = sorted([user_a_id, user_b_id])
+    cursor.execute(
+        "SELECT id FROM conversation WHERE user_a_id = ? AND user_b_id = ?", (p1, p2)
+    )
+    conv = cursor.fetchone()
+    if conv:
+        return conv['id']
+    conversation_id = str(uuid.uuid4())
+    cursor.execute(
+        "INSERT INTO conversation (id, user_a_id, user_b_id) VALUES (?, ?, ?)",
+        (conversation_id, p1, p2)
+    )
+    db.commit()
+    return conversation_id
 
 # 기본 라우트
 @app.route('/')
@@ -215,6 +253,34 @@ def user_detail(user_id):
         return redirect(url_for('users'))
     return render_template('user_detail.html', user=found_user)
 
+# 1:1 채팅방 입장 (없으면 생성 후 대화 내역과 함께 렌더링)
+@app.route('/chat/<peer_id>')
+def chat(peer_id):
+    if 'user_id' not in session:
+        return redirect(url_for('login'))
+    if peer_id == session['user_id']:
+        flash('자기 자신과는 채팅할 수 없습니다.')
+        return redirect(url_for('users'))
+    db = get_db()
+    cursor = db.cursor()
+    cursor.execute("SELECT id, username FROM user WHERE id = ?", (peer_id,))
+    peer = cursor.fetchone()
+    if not peer:
+        flash('사용자를 찾을 수 없습니다.')
+        return redirect(url_for('users'))
+    conversation_id = get_or_create_conversation(db, session['user_id'], peer_id)
+    cursor.execute("""
+        SELECT m.content, m.created_at, m.sender_id, u.username AS sender_name
+        FROM message m JOIN user u ON m.sender_id = u.id
+        WHERE m.conversation_id = ?
+        ORDER BY m.created_at
+    """, (conversation_id,))
+    history = cursor.fetchall()
+    return render_template(
+        'chat.html', peer=peer, conversation_id=conversation_id,
+        history=history, my_id=session['user_id']
+    )
+
 # 상품 등록
 @app.route('/product/new', methods=['GET', 'POST'])
 def new_product():
@@ -276,6 +342,55 @@ def report():
 def handle_send_message_event(data):
     data['message_id'] = str(uuid.uuid4())
     send(data, broadcast=True)
+
+# 대화방 참여자인지 DB 기준으로 확인 (클라이언트가 임의의 room에 join하는 것 방지)
+def is_conversation_participant(conversation_id, user_id):
+    db = get_db()
+    cursor = db.cursor()
+    cursor.execute(
+        "SELECT 1 FROM conversation WHERE id = ? AND (user_a_id = ? OR user_b_id = ?)",
+        (conversation_id, user_id, user_id)
+    )
+    return cursor.fetchone() is not None
+
+# 1:1 채팅방 입장: 본인이 참여자인 대화방에만 join 허용
+@socketio.on('join_chat')
+def handle_join_chat(data):
+    if 'user_id' not in session:
+        return
+    conversation_id = data.get('conversation_id')
+    if not conversation_id or not is_conversation_participant(conversation_id, session['user_id']):
+        return
+    join_room(conversation_id)
+
+# 1:1 채팅 메시지 전송: DB에 저장 후 해당 대화방에만 브로드캐스트
+@socketio.on('send_direct_message')
+def handle_send_direct_message(data):
+    if 'user_id' not in session:
+        return
+    conversation_id = data.get('conversation_id')
+    content = (data.get('message') or '').strip()
+    if not conversation_id or not content:
+        return
+    if not is_conversation_participant(conversation_id, session['user_id']):
+        return
+    db = get_db()
+    cursor = db.cursor()
+    message_id = str(uuid.uuid4())
+    created_at = datetime.datetime.utcnow().isoformat()
+    cursor.execute(
+        "INSERT INTO message (id, conversation_id, sender_id, content, created_at) VALUES (?, ?, ?, ?, ?)",
+        (message_id, conversation_id, session['user_id'], content, created_at)
+    )
+    db.commit()
+    cursor.execute("SELECT username FROM user WHERE id = ?", (session['user_id'],))
+    sender = cursor.fetchone()
+    emit('receive_direct_message', {
+        'sender_id': session['user_id'],
+        'sender_name': sender['username'],
+        'message': content,
+        'created_at': created_at
+    }, room=conversation_id)
 
 if __name__ == '__main__':
     init_db()  # 앱 컨텍스트 내에서 테이블 생성
