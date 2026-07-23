@@ -622,6 +622,10 @@ def update_password():
 
 DAILY_CHARGE_LIMIT = 500000     # 1일 충전 한도
 MONTHLY_CHARGE_LIMIT = 3000000  # 1개월 충전 한도
+# SQLite INTEGER 컬럼(부호 있는 64비트)이 담을 수 있는 최대값보다 훨씬 작은, 현실적인 금액 상한선.
+# Python의 int는 자릿수 제한이 없어 amount.isdigit()만으로는 이 범위를 넘는 값도 통과하는데,
+# 그 값을 그대로 쿼리 파라미터로 바인딩하면 sqlite3 드라이버가 OverflowError를 던져 500 에러가 났었다.
+MAX_TRANSACTION_AMOUNT = 1_000_000_000_000  # 1조원
 
 # 마이페이지: 잔액 충전 (실제 결제 연동 없이 가상으로 잔액에 바로 반영, 일일/월간 한도로 무한 충전 방지)
 @app.route('/profile/charge', methods=['POST'])
@@ -629,8 +633,8 @@ def charge_balance():
     if 'user_id' not in session:
         return redirect(url_for('login'))
     amount_raw = request.form.get('amount', '')
-    if not amount_raw.isdigit() or int(amount_raw) <= 0:
-        flash('충전 금액은 1 이상의 정수로 입력해주세요.')
+    if not amount_raw.isdigit() or int(amount_raw) <= 0 or int(amount_raw) > MAX_TRANSACTION_AMOUNT:
+        flash('충전 금액은 1 이상, 1,000,000,000,000 이하의 정수로 입력해주세요.')
         return redirect(url_for('profile'))
     amount = int(amount_raw)
 
@@ -678,8 +682,8 @@ def withdraw_balance():
         flash('정지된 계정은 출금할 수 없습니다.')
         return redirect(url_for('profile'))
     amount_raw = request.form.get('amount', '')
-    if not amount_raw.isdigit() or int(amount_raw) <= 0:
-        flash('출금 금액은 1 이상의 정수로 입력해주세요.')
+    if not amount_raw.isdigit() or int(amount_raw) <= 0 or int(amount_raw) > MAX_TRANSACTION_AMOUNT:
+        flash('출금 금액은 1 이상, 1,000,000,000,000 이하의 정수로 입력해주세요.')
         return redirect(url_for('profile'))
     amount = int(amount_raw)
 
@@ -929,7 +933,7 @@ def buy_product(product_id):
     if product['is_hidden']:
         flash('구매할 수 없는 상품입니다.')
         return redirect(url_for('view_product', product_id=product_id))
-    if not product['price'].isdigit() or int(product['price']) <= 0:
+    if not product['price'].isdigit() or int(product['price']) <= 0 or int(product['price']) > MAX_TRANSACTION_AMOUNT:
         flash('상품 가격 정보가 올바르지 않아 구매할 수 없습니다.')
         return redirect(url_for('view_product', product_id=product_id))
     amount = int(product['price'])
