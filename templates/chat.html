@@ -8,50 +8,22 @@
   {% elif linked_product.is_sold %}
     <p>문의 상품: {{ linked_product.title }} - 판매 완료된 상품입니다.</p>
   {% else %}
-    <form method="post" action="{{ url_for('buy_product', product_id=linked_product.id) }}" onsubmit="return confirm('{{ linked_product.title }}을(를) {{ linked_product.price }}원에 구매하시겠습니까?');">
+    <form method="post" action="{{ url_for('buy_product', product_id=linked_product.id) }}" data-confirm="{{ linked_product.title }}을(를) {{ linked_product.price }}원에 구매하시겠습니까?">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
       <button type="submit" style="width: auto;">{{ linked_product.title }} 구매하기 ({{ linked_product.price }}원)</button>
     </form>
   {% endif %}
 {% endif %}
-<div id="chat">
+<div id="chat" data-conversation-id="{{ conversation_id }}">
   <ul id="messages">
     {% for m in history %}
       <li><strong>{{ m.sender_name }}(@{{ m.sender_id }})</strong>: {{ m.content }}</li>
     {% endfor %}
   </ul>
   <input id="chat_input" type="text" placeholder="메시지를 입력하세요">
-  <button onclick="sendMessage()">전송</button>
+  <button id="chat_send_btn" type="button">전송</button>
 </div>
-
-<script type="text/javascript">
-  var conversationId = "{{ conversation_id }}";
-  var socket = io();
-
-  socket.on('connect', function() {
-    socket.emit('join_chat', { conversation_id: conversationId });
-  });
-
-  socket.on('receive_direct_message', function(data) {
-    var messages = document.getElementById('messages');
-    var item = document.createElement('li');
-    item.textContent = data.sender_name + "(@" + data.sender_id + "): " + data.message;
-    messages.appendChild(item);
-    window.scrollTo(0, document.body.scrollHeight);
-  });
-
-  function sendMessage() {
-    var input = document.getElementById('chat_input');
-    var message = input.value;
-    if (message) {
-      socket.emit('send_direct_message', { conversation_id: conversationId, message: message });
-      input.value = "";
-    }
-  }
-
-  document.getElementById('chat_input').addEventListener('keydown', function(e) {
-    if (e.key === 'Enter') {
-      sendMessage();
-    }
-  });
-</script>
+{% endblock %}
+{% block scripts %}
+<script src="{{ url_for('static', filename='js/chat.js') }}"></script>
 {% endblock %}
