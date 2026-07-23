@@ -92,13 +92,20 @@ def admin_required(f):
 AUTO_SUSPEND_REPORT_THRESHOLD = 3       # 수락된 신고가 이 횟수 이상이면 대상 회원 자동 휴면
 AUTO_SUSPEND_FALSE_REPORT_THRESHOLD = 3  # 거절된(허위) 신고가 이 횟수 이상이면 신고자 자동 휴면
 
-# 신고 대상 회원의 누적 수락 신고 수를 확인해 기준치 이상이면 자동 휴면 처리 (관리자 계정 제외)
+# 회원 본인에 대한 신고 + 본인이 등록한 상품에 대한 신고를 합산해 누적 수락 신고 수를 계산
+def count_accepted_reports_against_user(cursor, user_id):
+    cursor.execute("""
+        SELECT COUNT(*) AS c FROM report
+        WHERE status = 'accepted' AND (
+            (target_type = 'user' AND target_id = ?)
+            OR (target_type = 'product' AND target_id IN (SELECT id FROM product WHERE seller_id = ?))
+        )
+    """, (user_id, user_id))
+    return cursor.fetchone()['c']
+
+# 신고 대상 회원의 누적 수락 신고 수(본인 + 본인 상품)를 확인해 기준치 이상이면 자동 휴면 처리 (관리자 계정 제외)
 def maybe_auto_suspend_reported_user(cursor, target_id):
-    cursor.execute(
-        "SELECT COUNT(*) AS c FROM report WHERE target_type = 'user' AND target_id = ? AND status = 'accepted'",
-        (target_id,)
-    )
-    if cursor.fetchone()['c'] < AUTO_SUSPEND_REPORT_THRESHOLD:
+    if count_accepted_reports_against_user(cursor, target_id) < AUTO_SUSPEND_REPORT_THRESHOLD:
         return
     cursor.execute("SELECT is_admin, is_suspended FROM user WHERE id = ?", (target_id,))
     target = cursor.fetchone()
@@ -420,7 +427,13 @@ def user_detail(user_id):
     if not found_user or found_user['is_admin']:
         flash('사용자를 찾을 수 없습니다.')
         return redirect(url_for('users'))
-    return render_template('user_detail.html', user=found_user)
+    report_count = None
+    if current_user_is_admin():
+        report_count = count_accepted_reports_against_user(cursor, user_id)
+    return render_template(
+        'user_detail.html', user=found_user,
+        report_count=report_count, auto_suspend_threshold=AUTO_SUSPEND_REPORT_THRESHOLD
+    )
 
 # 관리자: 회원 휴면 해제 (휴면 전환은 신고 누적에 따라 자동으로만 이뤄지고, 해제는 관리자가 수동으로 처리)
 @app.route('/admin/users/<user_id>/unsuspend', methods=['POST'])
@@ -670,8 +683,11 @@ def admin_reports():
         SELECT r.*, u.username AS reporter_name,
                (SELECT COUNT(*) FROM report fr WHERE fr.reporter_id = r.reporter_id AND fr.status = 'rejected')
                    AS reporter_false_count,
-               (SELECT COUNT(*) FROM report tr WHERE tr.target_type = 'user' AND tr.target_id = r.target_id
-                   AND tr.status = 'accepted') AS target_accepted_count
+               (SELECT COUNT(*) FROM report tr WHERE tr.status = 'accepted' AND (
+                   (tr.target_type = 'user' AND tr.target_id = r.target_id)
+                   OR (tr.target_type = 'product' AND tr.target_id IN
+                       (SELECT id FROM product WHERE seller_id = r.target_id))
+               )) AS target_accepted_count
         FROM report r JOIN user u ON r.reporter_id = u.id
         ORDER BY r.created_at DESC
     """)
@@ -682,7 +698,7 @@ def admin_reports():
         auto_suspend_false_threshold=AUTO_SUSPEND_FALSE_REPORT_THRESHOLD
     )
 
-# 관리자: 신고 수락 (대상이 회원이면 누적 수락 신고 수를 확인해 기준치 이상이면 자동 휴면)
+# 관리자: 신고 수락 (대상 회원 또는 대상 상품의 판매자의 누적 수락 신고 수를 확인해 기준치 이상이면 자동 휴면)
 @app.route('/admin/reports/<report_id>/accept', methods=['POST'])
 @admin_required
 def admin_accept_report(report_id):
@@ -696,6 +712,11 @@ def admin_accept_report(report_id):
     cursor.execute("UPDATE report SET status = 'accepted' WHERE id = ?", (report_id,))
     if target_report['target_type'] == 'user':
         maybe_auto_suspend_reported_user(cursor, target_report['target_id'])
+    elif target_report['target_type'] == 'product':
+        cursor.execute("SELECT seller_id FROM product WHERE id = ?", (target_report['target_id'],))
+        product = cursor.fetchone()
+        if product:
+            maybe_auto_suspend_reported_user(cursor, product['seller_id'])
     db.commit()
     flash('신고를 수락 처리했습니다.')
     return redirect(url_for('admin_reports'))

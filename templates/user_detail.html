@@ -11,6 +11,7 @@
 {% if session.get('is_admin') and not user.is_admin and user.id != session.get('user_id') %}
 <hr>
 <h3>관리자 메뉴</h3>
+<p>신고당한 횟수(수락된 신고, 본인 신고 + 등록 상품 신고 합산): {{ report_count }}건 / 자동 휴면 기준 {{ auto_suspend_threshold }}건</p>
 <p>
   {% if user.is_suspended %}
   <form method="post" action="{{ url_for('admin_unsuspend_user', user_id=user.id) }}" style="display: inline;">
